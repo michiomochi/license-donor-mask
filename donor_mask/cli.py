@@ -179,7 +179,7 @@ def cmd_template_build(a) -> int:
 
 
 def cmd_verify(a) -> int:
-    """独立再検証: 原本・マスク済みPNG・ログだけから V1〜V6 をやり直す。"""
+    """独立再検証: 原本・マスク済みPNG・ログだけから V1〜V7 をやり直す。"""
     cfg = load_config(a.config)
     templates, _ = load_templates(a.templates, cfg)
     log = json.loads(Path(a.log).read_text(encoding="utf-8"))
@@ -199,7 +199,7 @@ def cmd_verify(a) -> int:
     before = {"sha256": log["input"]["sha256"], "mtime_ns": log["input"].get("mtime_ns")}
     vr = verify.verify_all(orig_arr=orig, masked_arr=masked, geom=geom, tmpl=tmpl, cfg=cfg,
                            fill_bgr=tuple(geom["fill_bgr"]), orig_path=Path(a.orig), orig_before=before)
-    for k in ("V1", "V2", "V3", "V4", "V5", "V6"):
+    for k in verify.VERDICTS:
         print(f"{k}: {'pass' if vr[k]['pass'] else 'FAIL ' + str(vr[k]['code'])}")
     print("verify:", "PASS" if vr["pass"] else "FAIL")
     return 0 if vr["pass"] else 3
@@ -227,7 +227,7 @@ def build_parser():
     rc.add_argument("--in", dest="inp", required=True)
     rc.add_argument("--out", required=True)
     common(rc)
-    v = sub.add_parser("verify", help="独立再検証（V1〜V6）")
+    v = sub.add_parser("verify", help="独立再検証（V1〜V7）")
     v.add_argument("--orig", required=True)
     v.add_argument("--masked", required=True)
     v.add_argument("--log", required=True)

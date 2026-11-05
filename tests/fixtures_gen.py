@@ -57,10 +57,11 @@ def _text(img, s, x, y, scale=0.5):
 
 
 def draw_card(kind="back", boxes=3, extra_triple=False, color=CARD_COLOR, stroke=False, mirror=False,
-              finger=False, glare=False, blank=False) -> np.ndarray:
+              finger=False, glare=False, blank=False, outside_stroke=None) -> np.ndarray:
     """2022x1276 の BGR カード画像。kind: back（想定の裏面）/ front（表面相当）/ other（別様式）。
 
     blank=True は手書き・遮蔽・追加物なしの空欄（テンプレート作成用）。
+    outside_stroke は「マスク（欄）の外に書かれた手書き風ストローク」の折れ線のリスト（正規化座標）。
     """
     img = np.full((NH * SS, NW * SS, 3), color, np.uint8)
     _text(img, "SYNTHETIC_TEST " + kind.upper() + " (NOT A LICENSE)", 28, 26, 0.5)
@@ -107,6 +108,10 @@ def draw_card(kind="back", boxes=3, extra_triple=False, color=CARD_COLOR, stroke
         for y in (60, 200, 340, 480, 580):
             _hline(img, 60, 870, y)
     if not blank:
+        if outside_stroke:  # 欄の外（マスクの外）に書かれた手書き風ストローク
+            for pts in outside_stroke:
+                arr = np.array([[int(round(x * SS)), int(round(y * SS))] for x, y in pts], np.int32)
+                cv2.polylines(img, [arr], False, PEN, _s(4), cv2.LINE_AA)
         if finger:
             cv2.ellipse(img, (_s(400), _s(460)), (_s(130), _s(120)), 20, 0, 360, SKIN, -1, cv2.LINE_AA)  # 指: 左枠とチェックボックスを覆う
         if glare:
@@ -220,11 +225,11 @@ def make(case: dict | None = None, **kw) -> Fixture:
     p = {"angle": 0.0, "scale": 1.0, "margin": 0.0, "persp": 0.0, "trapezoid": None, "gamma": 1.0, "blur": 0.0,
          "jpeg": 95, "seed": 0, "bg": "texture", "paper_aspect": None, "kind": "back", "mirror": False,
          "finger": False, "glare": False, "stroke": False, "boxes": 3, "extra_triple": False, "two_cards": False,
-         "cut_border": False, "no_card": False, "card_color": CARD_COLOR}
+         "cut_border": False, "no_card": False, "card_color": CARD_COLOR, "outside_stroke": None}
     p.update(case or {})
     p.update(kw)
     card = draw_card(p["kind"], p["boxes"], p["extra_triple"], tuple(p["card_color"]), p["stroke"], p["mirror"],
-                     p["finger"], p["glare"])
+                     p["finger"], p["glare"], outside_stroke=p["outside_stroke"])
     q0 = pose_quad(p["angle"], p["persp"], p["trapezoid"])
     bw, bh = np.ptp(q0[:, 0]), np.ptp(q0[:, 1])
     pad = 0.03 + p["margin"]

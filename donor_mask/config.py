@@ -77,7 +77,8 @@ _REQUIRED = {
     "mask": ["pad_x_min_px", "pad_x_ratio", "pad_y_min_px", "pad_y_ratio", "pad_cap_px",
              "protected_min_gap_px", "protected_clear_px", "area_ratio_min", "area_ratio_max", "grow_px"],
     "ink": ["ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
-            "print_dilate_px", "open_px", "border_ignore_px"],
+            "print_dilate_px", "open_px", "border_ignore_px", "ink_min_len_px", "ink_edge_margin_px",
+            "ink_corner_ignore_px"],
     "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "redetect_erode_px",
                "digit_absent_max"],
     "calibrate": ["min_samples", "align_max_correlation", "avg_threshold"],
@@ -110,7 +111,28 @@ def load_config(path=None) -> Config:
             if isinstance(v, bool) or not isinstance(v, (int, float, list)):
                 raise ConfigError(f"設定値が数値ではありません: [{sec}] {k} = {v!r}")
     _validate_mirror_gate(raw)
+    _validate_ink_gate(raw)
     return Config(raw, hashlib.sha256(data).hexdigest(), str(p))
+
+
+def _validate_ink_gate(raw: dict):
+    """V7（マスク外のインク）のしきい値も「無効にできない」。緩める設定は起動時に ConfigError。
+
+    - ink_min_len_px: 整数 8〜48。24 が設計 §3 V7 の値。8 未満は印刷ノイズを拾い、48 超は
+      「正規化キャンバスの短辺 638px に対して長すぎる」＝検出を事実上止めるため許さない
+    - ink_edge_margin_px: 整数 0〜24。6 が設計値。広げるほどカード縁の成分を数えなくなる（＝緩む）
+    """
+    k = raw["ink"]
+    lo = k["ink_min_len_px"]
+    if not isinstance(lo, int) or isinstance(lo, bool) or not (8 <= lo <= 48):
+        raise ConfigError(f"[ink] ink_min_len_px は 8〜48 の整数（設計値 24。小さすぎると誤検出、"
+                          f"大きすぎると V7 が実質無効）: {lo!r}")
+    em = k["ink_edge_margin_px"]
+    if not isinstance(em, int) or isinstance(em, bool) or not (0 <= em <= 24):
+        raise ConfigError(f"[ink] ink_edge_margin_px は 0〜24 の整数（設計値 6。広げるほど V7 が緩む）: {em!r}")
+    cn = k["ink_corner_ignore_px"]
+    if not isinstance(cn, int) or isinstance(cn, bool) or not (0 <= cn <= 120):
+        raise ConfigError(f"[ink] ink_corner_ignore_px は 0〜120 の整数（設計値 48。四隅の丸い角の除外幅）: {cn!r}")
 
 
 def _validate_mirror_gate(raw: dict):

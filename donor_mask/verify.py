@@ -1,4 +1,4 @@
-"""S8 マスク後の自動検証（V1〜V6）。全部 AND。1つでも落ちたら ok/ に出さない。
+"""S8 マスク後の自動検証（V1〜V7）。全部 AND。1つでも落ちたら ok/ に出さない。
 
 独立性: mask.py / pipeline.py / orient.py（マスクを作る側）は import しない。入力は
 「原本」「出力ファイル（または出力配列）」「ログに記録した幾何」とテンプレート・設定だけ。
@@ -16,6 +16,9 @@ from . import imgio, layout
 from . import ink as inkmod
 from .geom import apply_h, polygon_mask, quad_diag, quad_dist, rect_inside, rect_poly, warp_to_frame
 from .template import window_rect
+
+# S8 の判定項目（順序はログ・理由の並び）。全部 AND で、1つでも落ちたら ok/ に出さない。
+VERDICTS = ("V1", "V2", "V3", "V4", "V5", "V6", "V7")
 
 
 def make_mask(shape, polygon, grow: int) -> np.ndarray:
@@ -186,8 +189,67 @@ def v6_original(path, before: dict):
                         "mtime_same": after["mtime_ns"] == before["mtime_ns"]}}
 
 
+def _fill_rect(m: np.ndarray, r, shape) -> None:
+    """矩形（テンプレート座標）を 1 で塗る（キャンバスにクランプ）。"""
+    H, W = shape[:2]
+    x0, y0, x1, y1 = [int(round(float(v))) for v in r]
+    x0, y0 = max(0, min(W, x0)), max(0, min(H, y0))
+    x1, y1 = max(0, min(W, x1)), max(0, min(H, y1))
+    if x1 > x0 and y1 > y0:
+        m[y0:y1, x0:x1] = 1
+
+
+def v7_ink_outside(orig, geom: dict, tmpl, cfg):
+    """マスク外のカード全面でインクを探す（設計 §3 V7 / P1-L4）。
+
+    インク（§2.3 の定義）＝暗画素 − print_map（空欄カードの暗画素を膨張）− 縁。ここから
+    マスク内・保護領域内・ignore_rects 内の画素を落とし、残った連結成分のうち外接矩形の長辺が
+    `ink_min_len_px` 以上で、カード縁 `ink_edge_margin_px` 以内・四隅 `ink_corner_ignore_px` 四方に
+    かからないものがあれば
+    V_INK_OUTSIDE（review）。V5 のリング（マスク外周 12px）より遠い追記・はみ出し・訂正線を拾う。
+
+    四隅を除くのは、カードの角が丸い場合に「角の外側の明るい背景」と「カード本体」の明暗差が
+    縁に沿った縞として暗画素になるため（実物の角の半径は約3mm≒35px）。手書きではないので数えない。
+    """
+    k = cfg.ink
+    W, H = int(cfg.canvas.width), int(cfg.canvas.height)
+    P = np.asarray(geom["P_t2o"], np.float64)
+    al = warp_to_frame(orig, P, W, H)
+    ink = inkmod.ink_map(al, tmpl.print_map, cfg)
+    # 見ない領域: マスク（塗る所）・保護領域（情報が乗る）・ignore_rects（正当に手書きが乗る欄）。
+    # 成分を数える前に画素を落とす（領域をまたぐ長い線は、外側に出た部分だけで判定する）。
+    excl = np.zeros((H, W), np.uint8)
+    poly_t = apply_h(_inv(P), np.asarray(geom["mask_polygon"], np.float64))
+    cv2.fillPoly(excl, [np.round(poly_t).astype(np.int32)], 1)
+    for r in list(tmpl.ignore_rects) + list(tmpl.meta["protected_rects"]):
+        _fill_rect(excl, r, (H, W))
+    ink = np.where(excl > 0, 0, ink).astype(np.uint8)
+    n, _lab, stats, _cent = cv2.connectedComponentsWithStats((ink > 0).astype(np.uint8), connectivity=8)
+    lo, m = int(k.ink_min_len_px), int(k.ink_edge_margin_px)
+    c = int(k.ink_corner_ignore_px)
+    corners = ([(0, 0, c, c), (W - c, 0, W, c), (0, H - c, c, H), (W - c, H - c, W, H)] if c > 0 else [])
+    found, longest = [], 0
+    for i in range(1, n):
+        x, y, w, h = (int(v) for v in stats[i][:4])
+        long_px = max(w, h)
+        longest = max(longest, long_px)
+        if long_px < lo:
+            continue
+        if x < m or y < m or x + w > W - m or y + h > H - m:  # カード縁の成分は数えない
+            continue
+        if any(x < cx1 and x + w > cx0 and y < cy1 and y + h > cy0
+               for cx0, cy0, cx1, cy1 in corners):  # 四隅（丸い角と背景の境目）の成分は数えない
+            continue
+        found.append({"bbox": [x, y, x + w, y + h], "long_px": long_px, "area": int(stats[i][4])})
+    found.sort(key=lambda f: -f["long_px"])
+    ok = not found
+    return {"pass": ok, "code": None if ok else "V_INK_OUTSIDE",
+            "metrics": {"n_components": len(found), "longest_px": longest,
+                        "min_len_px": lo, "edge_margin_px": m, "worst": found[:5]}}
+
+
 def verify_all(*, orig_arr, masked_arr, geom, tmpl, cfg, fill_bgr, orig_path=None, orig_before=None):
-    """V1〜V6 を全部実行して AND を返す（途中で止めず全項目の値を残す）。"""
+    """V1〜V7 を全部実行して AND を返す（途中で止めず全項目の値を残す）。"""
     mask = make_mask(orig_arr.shape, geom["mask_polygon"], int(cfg.mask.grow_px))
     out = {"V1": v1_inclusion(geom, tmpl, cfg),
            "V2": v2_uniform(masked_arr, mask, fill_bgr),
@@ -201,11 +263,12 @@ def verify_all(*, orig_arr, masked_arr, geom, tmpl, cfg, fill_bgr, orig_path=Non
         out["V6"] = v6_original(orig_path, orig_before)
     else:
         out["V6"] = {"pass": False, "code": "X_ORIGINAL_CHANGED", "metrics": {"skipped": True}}
-    out["pass"] = all(out[k]["pass"] for k in ("V1", "V2", "V3", "V4", "V5", "V6"))
+    out["V7"] = v7_ink_outside(orig_arr, geom, tmpl, cfg)
+    out["pass"] = all(out[k]["pass"] for k in VERDICTS)
     out["mask_pixels"] = int(mask.sum())
     return out
 
 
 def failed_reasons(vr: dict) -> list:
     return [{"code": vr[k]["code"], "stage": "S8", "metric": k, "value": False, "threshold": True}
-            for k in ("V1", "V2", "V3", "V4", "V5", "V6") if not vr[k]["pass"]]
+            for k in VERDICTS if not vr[k]["pass"]]

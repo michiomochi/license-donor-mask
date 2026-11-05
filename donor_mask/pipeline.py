@@ -302,7 +302,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         out[m] = np.array(fill_bgr, np.uint8)
         vr = verify.verify_all(orig_arr=img, masked_arr=out, geom=g, tmpl=tmpl, cfg=cfg, fill_bgr=fill_bgr,
                                orig_path=path, orig_before=before)
-        _add(rec, "S8", {k: vr[k] for k in ("V1", "V2", "V3", "V4", "V5", "V6")})
+        _add(rec, "S8", {k: vr[k] for k in verify.VERDICTS})
         if not vr["V6"]["pass"]:
             halt = True
         if not vr["pass"]:
@@ -336,7 +336,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             if not v6["pass"]:
                 halt = True
                 _fail("S9", verify.failed_reasons({"V1": vr["V1"], "V2": vr["V2"], "V3": vr["V3"], "V4": vr["V4"],
-                                                   "V5": vr["V5"], "V6": v6}))
+                                                   "V5": vr["V5"], "V6": v6, "V7": vr["V7"]}))
             # v6_original が例外を投げた場合は original_unchanged が None のままなので、末尾の _check_original が拾う
             os.replace(stg, pp["masked"])
             placed.append("masked")
@@ -638,7 +638,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         else:
             vr = call("S8", verify_stage)
             if vr is not None:
-                _add(rec, "S8", {k: vr[k] for k in ("V1", "V2", "V3", "V4", "V5", "V6")})
+                _add(rec, "S8", {k: vr[k] for k in verify.VERDICTS})
                 if not vr["V6"]["pass"]:
                     halt = True
                 if not vr["pass"]:
