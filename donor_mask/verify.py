@@ -189,16 +189,6 @@ def v6_original(path, before: dict):
                         "mtime_same": after["mtime_ns"] == before["mtime_ns"]}}
 
 
-def _fill_rect(m: np.ndarray, r, shape) -> None:
-    """矩形（テンプレート座標）を 1 で塗る（キャンバスにクランプ）。"""
-    H, W = shape[:2]
-    x0, y0, x1, y1 = [int(round(float(v))) for v in r]
-    x0, y0 = max(0, min(W, x0)), max(0, min(H, y0))
-    x1, y1 = max(0, min(W, x1)), max(0, min(H, y1))
-    if x1 > x0 and y1 > y0:
-        m[y0:y1, x0:x1] = 1
-
-
 def v7_ink_outside(orig, geom: dict, tmpl, cfg):
     """マスク外のカード全面でインクを探す（設計 §3 V7 / P1-L4）。
 
@@ -209,7 +199,9 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
     V_INK_OUTSIDE（review）。V5 のリング（マスク外周 12px）より遠い追記・はみ出し・訂正線を拾う。
 
     四隅を除くのは、カードの角が丸い場合に「角の外側の明るい背景」と「カード本体」の明暗差が
-    縁に沿った縞として暗画素になるため（実物の角の半径は約3mm≒35px）。手書きではないので数えない。
+    縁に沿った縞として暗画素になるため（実物の角の半径は約3mm≒35px、紙台紙では角の縁が長い縞になる）。
+    手書きではないので数えない。**この除外は四隅 48px 四方を「見ない」ので、その範囲に書かれた
+    手書きは拾えない**（要校正）。
     """
     k = cfg.ink
     W, H = int(cfg.canvas.width), int(cfg.canvas.height)
@@ -222,12 +214,12 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
     poly_t = apply_h(_inv(P), np.asarray(geom["mask_polygon"], np.float64))
     cv2.fillPoly(excl, [np.round(poly_t).astype(np.int32)], 1)
     for r in list(tmpl.ignore_rects) + list(tmpl.meta["protected_rects"]):
-        _fill_rect(excl, r, (H, W))
+        cv2.rectangle(excl, (int(round(r[0])), int(round(r[1]))), (int(round(r[2])), int(round(r[3]))), 1, -1)
     ink = np.where(excl > 0, 0, ink).astype(np.uint8)
     n, _lab, stats, _cent = cv2.connectedComponentsWithStats((ink > 0).astype(np.uint8), connectivity=8)
     lo, m = int(k.ink_min_len_px), int(k.ink_edge_margin_px)
     c = int(k.ink_corner_ignore_px)
-    corners = ([(0, 0, c, c), (W - c, 0, W, c), (0, H - c, c, H), (W - c, H - c, W, H)] if c > 0 else [])
+    corners = [(0, 0, c, c), (W - c, 0, W, c), (0, H - c, c, H), (W - c, H - c, W, H)] if c > 0 else []
     found, longest = [], 0
     for i in range(1, n):
         x, y, w, h = (int(v) for v in stats[i][:4])
@@ -237,9 +229,9 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
             continue
         if x < m or y < m or x + w > W - m or y + h > H - m:  # カード縁の成分は数えない
             continue
-        if any(x < cx1 and x + w > cx0 and y < cy1 and y + h > cy0
-               for cx0, cy0, cx1, cy1 in corners):  # 四隅（丸い角と背景の境目）の成分は数えない
-            continue
+        if c > 0 and any(x < cx1 and x + w > cx0 and y < cy1 and y + h > cy0
+                        for cx0, cy0, cx1, cy1 in corners):
+            continue  # 四隅（丸い角の外側の背景・紙の縁）の成分は数えない
         found.append({"bbox": [x, y, x + w, y + h], "long_px": long_px, "area": int(stats[i][4])})
     found.sort(key=lambda f: -f["long_px"])
     ok = not found

@@ -99,12 +99,16 @@ def test_stroke_inside_the_mask_is_not_counted(cfg):
     assert r["pass"], r["metrics"]
 
 
-def test_ink_touching_the_card_edge_or_the_corners_is_not_counted(cfg):
-    """カード縁 6px 以内・四隅の丸い角に入る成分は数えない（背景との境目の縞を手書きと数えない）。"""
+def test_ink_touching_the_card_edge_is_not_counted(cfg):
+    """カード縁 6px 以内・四隅 48px 四方にかかる成分は数えない（背景との境目の縞を手書きと数えない）。"""
     edge = [(3, 300), (3, 400)]                               # 縁 6px 以内（ink_map が 0 にする）
     corner = [(10, 10), (30, 40)]                             # 四隅 48px 四方
     r = _run_v7(cfg, _canvas(strokes=[edge, corner]), _template())
     assert r["pass"], r["metrics"]
+    # 対照: 同じ長さのストロークを縁から離すと拾う（縁の除外が「何も見ていないだけ」でないこと）
+    inner = [(FREE[0] + 10, FREE[1] + 40), (FREE[0] + 10, FREE[3] - 10)]
+    r2 = _run_v7(cfg, _canvas(strokes=[inner]), _template())
+    assert not r2["pass"] and r2["code"] == "V_INK_OUTSIDE"
 
 
 # ---------------------------------------------------------------- 通し（パイプライン）
@@ -144,7 +148,7 @@ def test_v7_cannot_be_disabled_by_config(tmp_path):
     """しきい値を緩めて V7 を無効化できない（0/1/極端な値は起動時に ConfigError）。"""
     src = (Path(__file__).resolve().parent.parent / "config.toml").read_text(encoding="utf-8")
     for k, bad in (("ink_min_len_px", "4"), ("ink_min_len_px", "400"),
-                   ("ink_edge_margin_px", "40"), ("ink_corner_ignore_px", "-1")):
+                   ("ink_edge_margin_px", "40"), ("ink_edge_margin_px", "-1")):
         lines = [f"{k} = {bad}" if ln.strip().startswith(k + " ") else ln for ln in src.splitlines()]
         p = tmp_path / f"bad_{k}_{bad}.toml"
         p.write_text("\n".join(lines), encoding="utf-8")

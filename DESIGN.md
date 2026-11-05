@@ -28,7 +28,7 @@ for each input (ソート済みパス順):
   S5 quality_gates       反射・ぼけ・コントラスト・解像度（探索窓内）
   S6 locate_field        T / F / A の3手がかり。一致しなければ review
   S7 build_mask          R = T∪F∪A に余白・保護領域・境界インク・面積妥当性
-  S8 apply_and_verify    塗り → V1〜V6（verify.py。別モジュール）
+  S8 apply_and_verify    塗り → V1〜V7（verify.py。別モジュール）
   S9 emit                ok/.staging に masked と preview を書く → 読み戻して V2/V3 → V6 → 2つ揃ってから os.replace
   例外はどの段でも X_EXCEPTION として review（握り潰して ok にしない）
 ```
@@ -80,7 +80,7 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 校正用。通常 run（`process_file`）には手を入れず、`pipeline.diagnose_file` が同じ段関数（S0〜S7 の `s*_` 関数、`orient.normalize` / `aligned_image`、`verify.verify_all`）を呼ぶ。
 - 各段の fail を記録するだけで先の段へ進み、可能な限り全段のメトリクスを `logs/<job_id>.json` に残す（`"mode": "diagnostic"`。通常 run は `"run"`）。理由コードは通常経路と同じで、落ちた段の理由が全部 `reasons` に残る（各理由の `stage` で段が分かる）。
 - status は常に `review`（例外: `X_OUTPUT_EXISTS`＝既存ログありのときは `error`。原本が処理中に変化した（`X_ORIGINAL_CHANGED`, halt）ときはバッチを止めて終了コード 1。S0 の decode / I/O 失敗は run では `error` だが、diagnostic では `review` に落とす）。CLI の `[diag]` 行は、落ちた段の理由コードを通常 run の行と同じくカンマ区切りで末尾（`  reasons: …`）に出す（理由が無いときは付けない）。**`ok/` にも `review/` にも何も書かない**（masked / preview / review 画像を作らない）。書くのはログと、バッチ集計だけ。終了コードは 3。通常 run と `--shadow` とは同時に指定できない。
-- 前段の結果が無くて計算できない段は `{"skipped": "<前提段>"}`（値を推測で埋めない）。S1 で候補 0 件なら S2〜S7 は `{"skipped": "S1"}`、S3 で positive 様式を選べなければ S4〜S7 は `{"skipped": "S3"}`、S4 で位置合わせが取れなければ S5〜S7 は `{"skipped": "S4"}`、S6 の cues が取れなければ S7 は `{"skipped": "S6"}`、S7 の矩形が取れなければ S8 は `{"skipped": "S7"}`。S9 は常に記録する（S8 が走らなかったとき `{"skipped": "S8"}`、走ったときは `{"skipped": "書き出しは run のみ"}`）。S8 は S7 の矩形が取れたときだけメモリ上で塗って V1〜V6 を記録する。
+- 前段の結果が無くて計算できない段は `{"skipped": "<前提段>"}`（値を推測で埋めない）。S1 で候補 0 件なら S2〜S7 は `{"skipped": "S1"}`、S3 で positive 様式を選べなければ S4〜S7 は `{"skipped": "S3"}`、S4 で位置合わせが取れなければ S5〜S7 は `{"skipped": "S4"}`、S6 の cues が取れなければ S7 は `{"skipped": "S6"}`、S7 の矩形が取れなければ S8 は `{"skipped": "S7"}`。S9 は常に記録する（S8 が走らなかったとき `{"skipped": "S8"}`、走ったときは `{"skipped": "書き出しは run のみ"}`）。S8 は S7 の矩形が取れたときだけメモリ上で塗って V1〜V7 を記録する。
 - 通常 run と同じ `job_id`（入力 sha256 の先頭16桁）のログを書くので、通常 run と同じ出力先には書けない（既存ログは `X_OUTPUT_EXISTS`。上書きしない）。
 
 ## 2. 塗り方
@@ -146,7 +146,7 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 
 ## 7. fail-closed 条件（まとめ）
 
-README の表を参照。コードは `donor_mask/` の各段が理由コードを返す。`ok` に至る道は「S0〜S7 の全ゲート通過 → V1〜V6 通過 → 読み戻し V2/V3 → 原本不変」の 1 本のみ。
+README の表を参照。コードは `donor_mask/` の各段が理由コードを返す。`ok` に至る道は「S0〜S7 の全ゲート通過 → V1〜V7 通過 → 読み戻し V2/V3 → 原本不変」の 1 本のみ。
 
 ## 8. 設計書との差分・未実装・追加（食い違いを避けるための明示）
 

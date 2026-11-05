@@ -16,7 +16,7 @@
 1. カードの四辺を検出して台形補正（正規化キャンバス 1011×638px = 85.6×54mm）。ここで **面積最大では選ばない**。
 2. 4回転 × 鏡像 = 8通りの向き仮説を、様式テンプレートとの罫線レイアウト照合（ZNCC）で評価し、**一意に決まったときだけ**採用。
 3. 欄を3つの独立した手がかり（T: テンプレート位置 / F: 罫線の枠 / A: 選択肢の印の3連）で特定し、**3つが一致したときだけ**マスク範囲を決める。
-4. 単色（黒、または白）で塗り、**PNG** で書き出す前に、6項目の検証（V1〜V6）を全部通す。1つでも落ちたら `ok/` には何も出さない。
+4. 単色（黒、または白）で塗り、**PNG** で書き出す前に、7項目の検証（V1〜V7）を全部通す。1つでも落ちたら `ok/` には何も出さない。
 
 ### なぜ AI・外部送信を使わないか
 
@@ -45,7 +45,7 @@
 | 反射・ぼけ・低コントラスト・低解像度 | `Q_GLARE` / `Q_BLUR` / `Q_CONTRAST` / `Q_LOW_RES` |
 | 欄の手がかり（枠・チェックボックス3連）が無い／複数／互いに不一致 | `F_FRAME_NOT_FOUND` / `F_ANCHOR_NOT_FOUND` / `F_ANCHOR_MULTIPLE` / `F_CUE_DISAGREE` |
 | 保護領域との衝突・マスク面積異常・手書きのはみ出し | `M_PROTECTED_CONFLICT` / `M_AREA_OUT_OF_RANGE` / `M_INK_OVERFLOW` |
-| 塗った後の検証（V1〜V6）のどれかが不合格 | `V_INCLUSION` / `V_FILL_NOT_UNIFORM` / `V_OUTSIDE_CHANGED` / `V_CARD_DAMAGED` / `V_REDETECT_TRACE` / `V_BOUNDARY_INK` |
+| 塗った後の検証（V1〜V7）のどれかが不合格 | `V_INCLUSION` / `V_FILL_NOT_UNIFORM` / `V_OUTSIDE_CHANGED` / `V_CARD_DAMAGED` / `V_REDETECT_TRACE` / `V_BOUNDARY_INK` / `V_INK_OUTSIDE` |
 | 各段で例外・shadow モード | `X_EXCEPTION`（握り潰して ok にしない）/ `X_SHADOW` |
 | 入力 | `E_FORMAT_UNSUPPORTED`（JPEG/PNG 以外）/ `E_TOO_LARGE`（50MP 超）/ `E_DECODE` |
 
@@ -92,7 +92,7 @@ python -m donor_mask rectify --in ./sample.jpg --out ./calib
 python -m donor_mask template-build --in ./calib_samples --out ./templates/my_back_v1 --id my_back_v1 \
     --label back --spec ./my_back_v1_spec.json
 
-# 独立再検証（原本・マスク済みPNG・ログから V1〜V6 をやり直す）
+# 独立再検証（原本・マスク済みPNG・ログから V1〜V7 をやり直す）
 python -m donor_mask verify --orig ./inbox/a.jpg --masked ./out/ok/<job_id>__masked.png --log ./out/logs/<job_id>.json
 ```
 
@@ -194,7 +194,7 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 テンプレート経路そのものを測るため、正規化済みカード（1011×638）に灰色（RGB 110）の余白を左右 160px・上下 120px 足した入力（**実写真ではない**。`c{1,2,3}_pad.png` = 1331×878）で S1 以降を通しました（F を線分の一致に実測どおりの期待位置で定義し、`protected_rects` 下端を 288 に直した後。2026-11-05 再測）:
 
-| 入力 | S3 best ZNCC（`real_back_v1`） | S3（twin 除外後） | S4 相関 / tx / ty | S5 | S6 F（5線分の支持率。h0 h1 h2 / v0 v1） | S7（`pads_final` ltrb / area_ratio） | S8 V1〜V6 | 判定 |
+| 入力 | S3 best ZNCC（`real_back_v1`） | S3（twin 除外後） | S4 相関 / tx / ty | S5 | S6 F（5線分の支持率。h0 h1 h2 / v0 v1） | S7（`pads_final` ltrb / area_ratio） | S8 V1〜V7 | 判定 |
 |---|---|---|---|---|---|---|---|---|
 | c1 + 余白 | 0.7718（twin 0.6955 / `d_mirror` 0.0764） | 通過（second 0.2732） | 0.7553 / -0.369 / -0.357 | 通過（Laplacian 1708 / コントラスト 172） | 1.0 / 1.0 / 1.0 / 1.0 / 1.0 | 通過（36 / 9.0 / 36 / 23.76、0.9572） | 全て通過 | **ok** |
 | c2 + 余白 | 0.6074（twin 0.5440 / `d_mirror` 0.0634） | 通過（second 0.3352） | 0.8817 / -2.414 / -0.173 | 通過（386 / 81） | 1.0 / 1.0 / 1.0 / 1.0 / 1.0 | 通過（同上、0.9572） | 全て通過 | **ok** |
@@ -216,7 +216,7 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 - **実物様式のテンプレートは暫定版（`templates/real_back_v1`）しかない。** 実写真3枚（別カード。裏面様式は共通）から作りましたが、5枚未満・1様式のみ（交付年・都道府県も不明）なので様式差・地域差は未検証。上の「実様式（実カード3枚）での検証結果」のとおり、正規化カード＋余白では 3 枚とも ok に到達するが（暫定）、実写真そのものは S0/S1 で止まる。合成レイアウト（`templates/synthetic_*`）が示すのは「想定レイアウトなら、回転・遠近・台紙・上下逆などでも静かに誤マスクしない」ことまで。実物の様式が設計の前提（欄に枠罫線がある／選択肢の印が四角3個の縦並び）と違うことは実測で確定しました: **F（欄を囲む枠）も A（□3連）も無く、数字3連（y=362-386 / 392-416 / 422-443, ピッチ 30px）だけが実在の局所構造**です。この手がかりは `anchor_type = digits123`（印刷数字 1/2/3 のパッチ照合）として**実装済み**で、実測 9 値（3枚×3数字）の照合値は 0.815〜1.0（しきい値 0.6）。ただし n=3（別カード）の暫定値で、別の様式・年代の数字の字形や、数字が手書きで隠れた場合の挙動は未検証です。
 - 欄の座標・保護領域・無視領域・各しきい値は全て「初期値」。実物での校正（DESIGN.md 5 章）が必要。
 - **未実装のサブコマンド**: `calibrate`（陽性・陰性分布からのしきい値提案）、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあり、CLI 化していない）。呼ぶと終了コード 1 と「未実装」を返す。`labels.jsonl`・コンタクトシートによる ok 全件目視も未実装。`template-build`（設計書 5.4 C1）は実装済み（正規化済みサンプルの ECC 平均から `ruling.png` / `print.png` を作り、測定値は `--spec` で必ず与える。5枚未満は既定でエラー、`--allow-fewer` で `min_samples_met=false` の暫定テンプレート）。
-- **V7（マスク外のカード全面のインク検出。設計v2 §3 V7 / P1-L4）は未実装です。** 現在の自動検証は V1〜V6 の6項目で、マスク外については境界 12px のリング（V5）と、マスク外の画素差分（V3）までしか見ていません。**欄から離れた位置に書かれた手書き（余白への追記など）は検出できません。**
+- **V7（マスク外のカード全面のインク検出。設計v2 §3 V7 / P1-L4）は実装済み。** 位置合わせ済み原本のカード全面でインク（暗画素 − `print_map`）を求め、マスク内・保護領域内・`ignore_rects` 内の画素を落としたうえで、残った連結成分の外接矩形の長辺が `ink_min_len_px`（24px）以上で、カード縁 `ink_edge_margin_px`（6px）にかからないものがあれば `V_INK_OUTSIDE` で review にする。既存フィクスチャと実カード3枚（余白付き）では落ちない（実カードの最長成分は c1 2px / c2 23px / c3 7px）。**ただし次の2点は限界**: (1) 実カード c2 の 23px は上端のギロシェ地紋（印刷物。`print_map` に載っていない）で、しきい値 24px まで**余裕が 1px しかない**。(2) `real_back_v1` は `ignore_rects`（= `field_rect`）と `protected_rects` がカードの大半を覆うため、V7 が実際に見る面積は**カード全面の約 15.5%**（上端の帯・左右の余白・下端の帯）にとどまる。印刷情報の上や欄の内側に書かれたものは V7 では拾わない（設計どおりの除外）。
 - V4 の再検出は、カード検出（合意マップ 1・縁の支持率 0.5 に緩和）とチェックボックス検出・窓内エッジの確認まで。S1〜S6 の完全な再実行ではない（DESIGN.md 参照）。
 - 指かぶり・部分遮蔽は専用検出器を持たず、枠の支持率・アンカー有無・コントラストで落とす。モアレ・コピー画像は個別には検出しない。
 - 反射・ぼけ・コントラスト・解像度のしきい値、カード面積比 0.15 以上などは撮影条件に依存し、実データで要校正（例: スマホ写真でカードが画像の15%未満だと `C_AREA` で review）。
