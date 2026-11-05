@@ -104,6 +104,11 @@ def rect_inter(a, b) -> float:
     return rect_area((max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])))
 
 
+def rect_clip(a, b) -> tuple:
+    """a と b の共通部分の矩形（重なりが無ければ面積0の矩形）。"""
+    return (max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3]))
+
+
 def rect_iou(a, b) -> float:
     i = rect_inter(a, b)
     u = rect_area(a) + rect_area(b) - i

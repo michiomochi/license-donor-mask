@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 
 from . import layout
-from .geom import rect_inside, rect_iou, rect_union_bbox
+from .geom import rect_area, rect_clip, rect_inside, rect_iou, rect_union_bbox
 from .template import Template, window_rect
 
 
@@ -225,7 +225,16 @@ def locate_field(aligned_bgr, tmpl: Template, cfg):
                 fail("F_FRAME_NOT_FOUND", "f_rule_support",
                      worst["support"] if worst else 0.0, f.f_rules_support_min)
             else:
-                cues["F"] = F
+                # 罫線は欄の外へも伸びる（上の区切り罫線は protected_rects の内側、右上の縦罫線は欄の外）。
+                # 線分モードの F の矩形は「宣言した期待位置の外接」＝画像から測った欄ではないので、
+                # 欄矩形 R と V1 には欄（T）の内側だけを使う。欄の外の線分で欄を広げない。
+                fm["rect_declared"] = [float(v) for v in F]
+                clipped = rect_clip(F, T)
+                if rect_area(clipped) <= 0:
+                    fail("F_CUE_DISAGREE", "F_rect_vs_field_rect", 0, 1)
+                else:
+                    cues["F"] = clipped
+                    fm["rect_used"] = [float(v) for v in clipped]
     else:
         F, fm = detect_frame(rul, T, cfg)
         met["F"] = fm
