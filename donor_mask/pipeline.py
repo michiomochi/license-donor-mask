@@ -130,7 +130,8 @@ def _add(rec, stage, value):
 def _out_paths(out_dir: Path, job: str):
     return {"masked": out_dir / "ok" / f"{job}__masked.png", "preview": out_dir / "ok" / f"{job}__preview.jpg",
             "review": out_dir / "review" / f"{job}__review.jpg", "log": out_dir / "logs" / f"{job}.json",
-            "staging": out_dir / "ok" / ".staging" / f"{job}__masked.png"}
+            "staging": out_dir / "ok" / ".staging" / f"{job}__masked.png",
+            "staging_preview": out_dir / "ok" / ".staging" / f"{job}__preview.jpg",}
 
 
 # ---------------------------------------------------------------- 描画
@@ -203,6 +204,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
     before = imgio.file_state(path)
     rec["input"].update({"sha256": sha, "bytes": len(data), "mtime_ns": before["mtime_ns"]})
     pp = _out_paths(out_dir, job)
+    placed = []
     if any(pp[k].exists() for k in ("masked", "preview", "review", "log")):  # 既存出力は上書きしない
         rec["status"] = "error"
         rec["reasons"] = [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "exists", "value": True,
@@ -302,33 +304,46 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             _fail("S8", verify.failed_reasons(vr))
         if shadow:
             _fail("S9", [{"code": "X_SHADOW", "metric": "shadow_mode", "value": True, "threshold": False}])
-        # S9: staging に書く → 読み戻して V2/V3 → os.replace
+        # S9: masked と preview の両方を staging に書き、読み戻し検証(V2/V3)と V6・原本不変を
+        #     すべて通過してから、まとめて ok/ へ確定する（review なら ok/ に1つも残さない）
         png = imgio.encode_png(out, int(cfg.output.png_compression))
-        for k in ("staging", "masked", "preview", "review"):
+        pv = imgio.encode_jpeg(draw_preview(out, polygon, order_quad(cands[best["cand"]]["quad"])),
+                               int(cfg.output.preview_jpeg_quality))
+        for k in ("staging", "staging_preview", "masked", "preview", "review"):
             pp[k].parent.mkdir(parents=True, exist_ok=True)
-        stg = pp["staging"]
-        stg.write_bytes(png)
+        stg, stg_pv = pp["staging"], pp["staging_preview"]
         try:
+            stg.write_bytes(png)
+            stg_pv.write_bytes(pv)
             back = imgio.read_array(stg)
             if back is None:
                 raise OSError("読み戻せない")
+            if imgio.read_array(stg_pv) is None:
+                raise OSError("preview を読み戻せない")
             rb2, rb3 = verify.v2_uniform(back, m, fill_bgr), verify.v3_outside(back, img, m)
             _add(rec, "S9", {"readback_V2": rb2, "readback_V3": rb3})
             if not (rb2["pass"] and rb3["pass"]):
                 _fail("S9", [{"code": c["code"], "metric": "readback", "value": False, "threshold": True}
                              for c in (rb2, rb3) if not c["pass"]])
+            # 原本不変（V6）も ok/ へ出す前に確定させる（確定前チェックはここ 1 回だけ。末尾でもう一度確認する）
             v6 = verify.v6_original(path, before)
+            rec["original_unchanged"] = bool(v6["pass"])
             if not v6["pass"]:
                 halt = True
                 _fail("S9", verify.failed_reasons({"V1": vr["V1"], "V2": vr["V2"], "V3": vr["V3"], "V4": vr["V4"],
                                                    "V5": vr["V5"], "V6": v6}))
+            # v6_original が例外を投げた場合は original_unchanged が None のままなので、末尾の _check_original が拾う
             os.replace(stg, pp["masked"])
+            placed.append("masked")
+            os.replace(stg_pv, pp["preview"])
+            placed.append("preview")
         finally:
-            if stg.exists():
-                stg.unlink()
-        pv = imgio.encode_jpeg(draw_preview(out, polygon, order_quad(cands[best["cand"]]["quad"])),
-                               int(cfg.output.preview_jpeg_quality))
-        pp["preview"].write_bytes(pv)
+            for s in (stg, stg_pv):
+                try:
+                    s.unlink(missing_ok=True)  # staging は納品対象ではない
+                except OSError as e:  # 掃除の失敗で真因の理由コードを潰さない（外へは投げない）
+                    rec["stages"]["S9_cleanup"] = {**rec["stages"].get("S9_cleanup", {}),
+                                                   s.name: f"{type(e).__name__}: {str(e)[:120]}"}
         rec["status"] = "ok"
         rec["outputs"].update({"masked": str(pp["masked"].resolve()), "masked_sha256": imgio.sha256_bytes(png),
                                "preview": str(pp["preview"].resolve())})
@@ -336,25 +351,26 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         if rec["status"] != "error":
             rec["status"] = "review"
         rec["reasons"] = [clean(r) for r in sf.reasons]
+        halt = _abort_ok(pp, rec, placed) or halt
         if img is not None:
             _write_review(rec, pp, img, cands, ctx, sf.reasons, proposal=ctx.get("polygon") if shadow else None, cfg=cfg)
     except Exception as e:  # ここに来るのは段の外（描画・書き出し等）の想定外。ok にはしない
         rec["status"] = "review"
         rec["reasons"] = [{"code": "X_EXCEPTION", "stage": "S9", "metric": type(e).__name__,
                            "value": str(e)[:200], "threshold": None}]
+        halt = _abort_ok(pp, rec, placed) or halt
         if img is not None:
             _write_review(rec, pp, img, cands, ctx, rec["reasons"], cfg=cfg)
-    try:
-        after = imgio.file_state(path)
-        rec["original_unchanged"] = after["sha256"] == before["sha256"] and after["mtime_ns"] == before["mtime_ns"]
-    except OSError:
-        rec["original_unchanged"] = False
-    if rec["original_unchanged"] is False:
+    # 末尾でもう一度確認する（S9 で確定した後に原本が変わる競合を拾う）。既に False なら再読みしない
+    if rec["original_unchanged"] is False or not _check_original(rec, path, before):
         halt = True
-        if rec["status"] == "ok":  # 万一でも ok のまま残さない
+        if rec["status"] == "ok":  # 確定後に変わった。ok/ を残して review にしない
             rec["status"] = "review"
-            rec["reasons"] = [{"code": "X_ORIGINAL_CHANGED", "stage": "S8", "metric": "sha256_mtime", "value": False,
-                               "threshold": True}]
+            rec["reasons"] = [{"code": "X_ORIGINAL_CHANGED", "stage": "S9", "metric": "sha256_mtime",
+                               "value": False, "threshold": True}]
+            halt = _abort_ok(pp, rec, placed) or halt
+            if img is not None:
+                _write_review(rec, pp, img, cands, ctx, rec["reasons"], cfg=cfg)
     return _finish(rec, out_dir, pp, cands, ctx, t0), halt
 
 
@@ -367,6 +383,43 @@ def _write_review(rec, pp, img, cands, ctx, reasons, proposal=None, cfg=None):
     except Exception as e:  # review 画像が書けなくても判定は review のまま
         rec["reasons"].append({"code": "X_REVIEW_IMAGE_FAILED", "stage": "S9", "metric": type(e).__name__,
                                "value": str(e)[:200], "threshold": None})
+
+
+def _check_original(rec, path, before):
+    """原本の sha256/mtime が変わっていないか（判定は verify.v6_original に一本化）。rec に記録して bool を返す。"""
+    try:
+        rec["original_unchanged"] = bool(verify.v6_original(path, before)["pass"])
+    except OSError:
+        rec["original_unchanged"] = False
+    return rec["original_unchanged"]
+
+
+def _abort_ok(pp, rec, placed):
+    """ok/ に確定した産物を取り消す。review/error に落とす経路は必ずここを通す（ok/ に残骸を残さない）。
+
+    削除に失敗したら「ok/ に残骸があるまま review」にはせず、status=error・理由コードを残して
+    halt=True を返しバッチを止める（残骸の存在を人が必ず気づく状態にする）。
+    """
+    failed = []
+    for k in list(placed):
+        try:
+            if pp[k].exists():
+                pp[k].unlink()
+            placed.remove(k)
+        except OSError as e:
+            failed.append({"code": "X_OK_CLEANUP_FAILED", "stage": "S9", "metric": k,
+                           "value": f"{type(e).__name__}: {str(e)[:160]}", "threshold": None})
+    failed_keys = {f["metric"] for f in failed}
+    for k in ("masked", "preview"):
+        if k not in failed_keys:  # 削除できなかった分はパスを残す（ログを見れば残骸に気づける）
+            rec["outputs"][k] = None
+    if "masked" not in failed_keys:
+        rec["outputs"]["masked_sha256"] = None
+    if failed:
+        rec["status"] = "error"
+        rec["reasons"] = list(rec["reasons"]) + failed
+        return True
+    return False
 
 
 def _finish(rec, out_dir, pp, cands, ctx, t0):

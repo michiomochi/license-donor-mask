@@ -29,7 +29,7 @@ for each input (ソート済みパス順):
   S6 locate_field        T / F / A の3手がかり。一致しなければ review
   S7 build_mask          R = T∪F∪A に余白・保護領域・境界インク・面積妥当性
   S8 apply_and_verify    塗り → V1〜V6（verify.py。別モジュール）
-  S9 emit                ok/.staging に書く → 読み戻して V2/V3 → os.replace
+  S9 emit                ok/.staging に masked と preview を書く → 読み戻して V2/V3 → V6 → 2つ揃ってから os.replace
   例外はどの段でも X_EXCEPTION として review（握り潰して ok にしない）
 ```
 
@@ -90,7 +90,7 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 | V5 | 最終マスク矩形の外周リングにインクが残っていない（原本を位置合わせして再計算） | `V_BOUNDARY_INK` |
 | V6 | 原本の sha256 と mtime が処理前後で一致 | `X_ORIGINAL_CHANGED`（バッチ停止） |
 
-書き出し: `ok/.staging/` → 読み戻して V2/V3 → V6 → `os.replace`。失敗時は staging のファイルを削除。
+書き出し: `ok/.staging/` に masked と preview を書き → masked は読み戻して V2/V3、preview はデコード可能なことを確認 → V6・原本不変 → 2つ揃ってから `os.replace` で ok/ へ確定。確定後に失敗したら ok/ に置いた分を削除してから review（削除も失敗したら error＋バッチ停止）。失敗時は staging のファイルを削除。
 
 ## 4. ファイル構成
 

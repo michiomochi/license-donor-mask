@@ -79,7 +79,9 @@ def cmd_run(a) -> int:
         codes = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
         print(f"[{rec['status']}] {f.name} -> job {rec['job_id']}" + (f"  reasons: {codes}" if codes else ""))
         if halt:
-            print("[FATAL] 原本が処理中に変化しました（X_ORIGINAL_CHANGED）。バッチを停止します", file=sys.stderr)
+            why = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
+            print(f"[FATAL] 原本が処理中に変化、または ok/ の後始末に失敗しました（{why}）。バッチを停止します",
+                  file=sys.stderr)
             halted = True
             break
     shas = sorted(r["input"].get("sha256", r["job_id"]) for r in results)

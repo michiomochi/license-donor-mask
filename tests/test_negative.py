@@ -1,4 +1,7 @@
 """陰性・失敗注入（合成）: 静かに成功しない（review になり、ok/ に何も出ない）ことを固定する。"""
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 from conftest import assert_ok_invariants, ok_files, reason_codes, run_fixture
@@ -191,3 +194,205 @@ def test_too_large_image_is_rejected_before_decode(cfg, tmpls, tmp_path):
     p.write_bytes(data)
     rec, _ = pipeline.process_file(p, tmp_path / "out", cfg, templates, tsha)
     assert rec["status"] == "review" and "E_TOO_LARGE" in reason_codes(rec)
+
+
+# ---- S9 の fail-closed（設計 6.3）: review なのに ok/ に masked が残ると下流が誤納品する
+def _staging_files(out):
+    d = out / "ok" / ".staging"
+    return sorted(f.name for f in d.iterdir()) if d.exists() else []
+
+
+def test_preview_render_failure_leaves_ok_empty(cfg, tmpls, tmp_path, monkeypatch):
+    """プレビュー生成が落ちたら review。先に確定した masked を ok/ に残さない。"""
+    def boom(*a, **k):
+        raise RuntimeError("injected preview failure")
+    monkeypatch.setattr(pipeline, "draw_preview", boom)
+    f = fx.make({"seed": 1})
+    rec, od, _ = run_fixture(tmp_path, f, cfg, tmpls)
+    assert_review(rec, od, ["X_EXCEPTION"])
+    assert _staging_files(od) == []
+
+
+def test_original_changed_after_verify_leaves_ok_empty(cfg, tmpls, tmp_path, monkeypatch):
+    """V6 通過後・確定前に原本が変わったら ok/ に何も残さず review + halt。
+
+    この時点で ok/ が空であること（＝確定より前に確認している）も固定する。
+    """
+    templates, tsha = tmpls
+    f = fx.make({"seed": 1})
+    d = tmp_path / "in"
+    d.mkdir()
+    p = d / ("SYNTHETIC_TEST_changed" + f.ext)
+    p.write_bytes(f.data)
+    out = tmp_path / "out"
+    real = verify.v6_original
+    state = {"bumped": False}
+
+    def bump(path, before):
+        r = real(path, before)  # まずは実物で判定する（以降は正直な判定に戻す）
+        if not r["pass"]:  # 判定が落ちた時点でも ok/ は空（＝確定前に確認している）
+            assert ok_files(out) == []
+        if not state["bumped"] and r["pass"]:
+            assert ok_files(out) == []  # mtime を進める時点でまだ確定していない
+            state["bumped"] = True
+            st = os.stat(path)
+            os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        return r
+
+    monkeypatch.setattr(verify, "v6_original", bump)
+    rec, halt = pipeline.process_file(p, out, cfg, templates, tsha)
+    assert halt is True
+    assert rec["status"] == "review"
+    assert "X_ORIGINAL_CHANGED" in reason_codes(rec)
+    assert ok_files(out) == []
+    assert rec["outputs"]["masked"] is None
+    assert rec["outputs"]["preview"] is None
+
+
+def test_ok_case_commits_masked_and_preview_together(cfg, tmpls, tmp_path):
+    """正常系: ok/ には masked と preview の2つだけが揃い、staging は空。"""
+    f = fx.make({"seed": 1})
+    rec, od, _ = run_fixture(tmp_path, f, cfg, tmpls)
+    assert rec["status"] == "ok", rec["reasons"]
+    job = rec["job_id"]
+    assert ok_files(od) == [f"{job}__masked.png", f"{job}__preview.jpg"]
+    assert _staging_files(od) == []
+
+
+def test_replace_failure_after_masked_placed_rolls_back(cfg, tmpls, tmp_path, monkeypatch):
+    """masked を ok/ へ置いた直後の確定失敗でも ok/ を空にして review に落とす。"""
+    real = pipeline.os.replace
+    seen: dict = {"ok_at_failure": None}
+
+    def flaky(src, dst, *a, **k):
+        # 置き場所に依存させる（通算回数に依存すると、無関係な実装変更で注入点がずれる）
+        if str(dst).endswith("__preview.jpg"):
+            seen["ok_at_failure"] = sorted(p.name for p in Path(dst).parent.iterdir() if p.is_file())
+            raise OSError("injected replace failure")
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(pipeline.os, "replace", flaky)
+    f = fx.make({"seed": 1})
+    rec, od, _ = run_fixture(tmp_path, f, cfg, tmpls)
+    # 契約 → 内部の順で確認する
+    assert rec["status"] == "review"
+    assert ok_files(od) == []
+    assert seen["ok_at_failure"] == [f"{rec['job_id']}__masked.png"]  # 失敗時点で masked は ok/ にあった（rollback を実際に検証）
+    assert rec["outputs"]["masked"] is None
+    assert _staging_files(od) == []
+
+
+def test_original_changed_after_commit_rolls_back_ok(cfg, tmpls, tmp_path, monkeypatch):
+    """S9 通過後（ok 判定後）の競合を末尾の再確認で拾い、ok/ を巻き戻す。"""
+    templates, tsha = tmpls
+    f = fx.make({"seed": 1})
+    d = tmp_path / "in"
+    d.mkdir()
+    p = d / ("SYNTHETIC_TEST_late_change" + f.ext)
+    p.write_bytes(f.data)
+    out = tmp_path / "out"
+    real_replace = pipeline.os.replace
+
+    def bump_after_commit(src, dst, *a, **k):
+        r = real_replace(src, dst, *a, **k)
+        if str(dst).endswith("__preview.jpg"):  # masked と preview が揃って ok/ に確定した直後に原本が変わる競合
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        return r
+
+    monkeypatch.setattr(pipeline.os, "replace", bump_after_commit)
+    rec, halt = pipeline.process_file(p, out, cfg, templates, tsha)
+    assert halt is True
+    assert rec["status"] == "review"
+    assert "X_ORIGINAL_CHANGED" in reason_codes(rec)
+    assert ok_files(out) == []
+    assert rec["outputs"]["masked"] is None
+
+
+def _run_one(tmp_path, fixture, cfg, tmpls, name):
+    """halt=True が想定のケース用: run_fixture は halt を許さないので直接呼ぶ。"""
+    templates, tsha = tmpls
+    d = tmp_path / "in"
+    d.mkdir(exist_ok=True)
+    p = d / (name + fixture.ext)
+    p.write_bytes(fixture.data)
+    out = tmp_path / "out"
+    rec, halt = pipeline.process_file(p, out, cfg, templates, tsha)
+    return rec, out, halt
+
+
+def test_staging_cleanup_failure_keeps_the_real_reason(cfg, tmpls, tmp_path, monkeypatch):
+    """staging の掃除が失敗しても真因の理由コードを X_EXCEPTION に置換せず、もう片方の掃除も続ける。"""
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self.name.endswith("__masked.png") and self.parent.name == ".staging":
+            raise OSError("injected unlink failure")
+        return real_unlink(self, *a, **k)
+
+    real_read = pipeline.imgio.read_array
+    state = {"in_s9": False}
+
+    def mark(p):  # staging の読み戻しが走ったら S9 の検証フェーズに入ったと分かる
+        arr = real_read(p)
+        if str(p).endswith("__masked.png"):
+            state["in_s9"] = True
+        return arr
+
+    real_v6 = verify.v6_original
+
+    def v6_fail_in_s9(path, before):
+        r = real_v6(path, before)
+        # staging の読み戻し後（＝S9 の検証フェーズ）は常に False。in_s9 はラッチなので一度立つと以後の V6
+        # （末尾の再確認を含む）も False を返す。ここでの目的は V6 失敗で StageFail を in-flight にすること。
+        if state["in_s9"]:
+            return {"pass": False, "code": "X_ORIGINAL_CHANGED", "metrics": r["metrics"]}
+        return r
+
+    monkeypatch.setattr(pipeline.imgio, "read_array", mark)
+    monkeypatch.setattr(verify, "v6_original", v6_fail_in_s9)
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    f = fx.make({"seed": 1})
+    rec, od, _ = _run_one(tmp_path, f, cfg, tmpls, "SYNTHETIC_TEST_cleanup")
+    assert rec["status"] == "review"
+    codes = reason_codes(rec)
+    assert "X_ORIGINAL_CHANGED" in codes, codes
+    assert "X_EXCEPTION" not in codes, codes  # 掃除の失敗で真因が潰れていない
+    assert ok_files(od) == []
+    # 2つ目（preview）の掃除まで走る。消せなかった masked だけが staging に残る
+    assert _staging_files(od) == [f"{rec['job_id']}__masked.png"]
+    cleanup = rec["stages"].get("S9_cleanup", {})
+    assert list(cleanup) == [f"{rec['job_id']}__masked.png"]
+    assert "OSError" in list(cleanup.values())[0]
+
+
+def test_ok_cleanup_failure_keeps_the_path_for_visibility(cfg, tmpls, tmp_path, monkeypatch):
+    """ok/ の削除に失敗したら、そのパスはログに残す（null にすると残骸に気づけない）。"""
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *a, **k):
+        if self.name.endswith("__masked.png") and self.parent.name == "ok":
+            raise OSError("injected unlink failure")
+        return real_unlink(self, *a, **k)
+
+    real_replace = pipeline.os.replace
+
+    def bump_after_commit(src, dst, *a, **k):  # 確定後に原本が変わる競合（outputs が埋まった後の巻き戻し）
+        r = real_replace(src, dst, *a, **k)
+        if str(dst).endswith("__preview.jpg"):
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        return r
+
+    monkeypatch.setattr(Path, "unlink", flaky_unlink)
+    monkeypatch.setattr(pipeline.os, "replace", bump_after_commit)
+    f = fx.make({"seed": 1})
+    p = tmp_path / "in" / ("SYNTHETIC_TEST_okcleanup" + f.ext)  # _run_one が同じ名前で書き出す
+    rec, od, halt = _run_one(tmp_path, f, cfg, tmpls, "SYNTHETIC_TEST_okcleanup")
+    assert halt is True
+    assert rec["status"] == "error"
+    assert "X_OK_CLEANUP_FAILED" in reason_codes(rec)
+    assert rec["outputs"]["masked"] is not None  # 残骸のありかをログで示す
+    assert rec["outputs"]["masked"].endswith("__masked.png")
+    assert Path(rec["outputs"]["masked"]).exists()
+    assert rec["outputs"]["preview"] is None  # 消せた方は null
