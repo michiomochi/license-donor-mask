@@ -36,7 +36,7 @@
 | 状況 | 理由コード（例） |
 |---|---|
 | カード四辺が4点として取れない（**「画像全体をカードとみなす」フォールバックは存在しません**） | `C_NO_CARD` |
-| カードが画像いっぱい（余白ゼロで撮影。画像全体の輪郭だけがカード比 1.585±5% の四角形）→ **再撮影を案内**（条件付きフォールバックは入れていない） | `C_FRAME_FILLED` |
+| カードが画像いっぱい（余白ゼロで撮影・トリミング済み）。画像全体の輪郭がカード比 1.585±5% の四角形で、他に候補が無く、**さらに画像全体を1枚のカードとみなした罫線照合が一致する**（最大 ZNCC ≥ 0.40、かつ枠を内側へ縮めた照合より高い）とき → **再撮影を案内**（条件付きフォールバックは入れていない。照合が一致しても処理は進めない） | `C_FRAME_FILLED` |
 | 遠近が強すぎる（対辺比 > 1.30）／端で欠けている／マップ間の合意なし | `C_PERSPECTIVE` / `C_TOUCHES_BORDER` / `C_NO_CONSENSUS` |
 | 候補が複数あり一意に決まらない（台紙・2枚写り。**面積最大を自動採用しない**） | `O_AMBIGUOUS` / `C_MULTIPLE_CARDS` |
 | 表面・他カード・鏡像 | `O_FRONT_SIDE` / `O_UNSUPPORTED_CARD` / `O_MIRRORED` / `O_MIRROR_AMBIGUOUS` |
@@ -108,6 +108,7 @@ out/logs/{job_id}.json           1件ごとのログ（数値と幾何のみ。�
 out/logs/batch_*.json            バッチ集計
 ```
 
+- ログには `primary_reason`（一次理由。`reasons` から固定の優先順で1つ選んだコード。ok なら null）も入る。`reasons` の中身と並びは変わらない。S1 で候補が0件のときは、棄却コードを次の順で見て最初に見つかったものが一次理由になる: `C_TOUCHES_BORDER` → `C_FRAME_FILLED` → `C_PERSPECTIVE` → `C_ANGLE` → `C_EDGE_SUPPORT` → `C_NO_CONSENSUS` → `C_ASPECT` → `C_AREA`。どれも無ければ `C_NO_CARD`。review 画像のラベルも一次理由が先頭になる。
 - `job_id` は入力バイト列の sha256 先頭16桁。**元ファイル名は出力名に使いません**（氏名を含みうるため）。
 - 出力先が入力ディレクトリと同じ／入力の配下なら起動エラー（終了コード 1）。既存の出力は上書きせず、その件を `X_OUTPUT_EXISTS` にします。原本は読み取り専用で開きます。
 - EXIF は再エンコードで落ちます（意図した挙動。EXIF の向きは読み込み時に反映）。
@@ -150,10 +151,10 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 | 見本 | カード検出 | 向き | 検出された欄 | 被覆率 | verified | 結果 |
 |---|---|---|---|---|---|---|
-| kumaisui_driver_license.png | 候補 0 件（画像いっぱいの輪郭は枠いっぱい判定 `C_FRAME_FILLED` または `C_AREA`、内部の区画は `C_ASPECT` ×5 で棄却） | — | — | — | — | **review** `C_NO_CARD` |
+| kumaisui_driver_license.png | 候補 0 件（画像いっぱいの輪郭は、外枠がカード比のときだけ罫線照合で枠いっぱいかを判定〔一致すれば `C_FRAME_FILLED`、しなければコードを付けずログ `stages.S1.frame_filled` に照合値を残す〕。カード比でなければ `C_AREA`。内部の区画は `C_ASPECT` ×5 で棄却） | — | — | — | — | **review** `C_NO_CARD` |
 | mhlw_intention_01.jpg | 候補 0 件（`C_AREA` ×1、`C_ASPECT` ×2） | — | — | — | — | **review** `C_NO_CARD` |
 
-（`C_FRAME_FILLED` は画像のアスペクトがカード比 1.585±5% のときだけ付く。画像全体の輪郭はどの写真にも現れるので、他に候補が取れなかったときに限り理由コードにする。）
+（`C_FRAME_FILLED` は、画像のアスペクトがカード比 1.585±5% で、他に候補が取れず、画像全体の罫線がテンプレートと一致したときだけ付く。画像全体の輪郭はどの写真にも現れるので、アスペクトだけでは判定しない〔木目の机に置いて撮った 696×441 の実写真で誤って付いていた〕。照合値はログの `stages.S1.frame_filled` に残る。）
 
 どちらも**マスク画像は出力されません（`ok/` は空）。これは設計どおりの正しい挙動**です。見本は撮影された写真ではなく（kumaisui は背景が無く、画像の縁がカード外形にほぼ一致する切り出し〔角は透過〕、mhlw は複数の図を並べた解説図）、
 カード四辺を背景との境界から一意に取れる入力ではありません。無理に通すフォールバックは作っていません。
@@ -188,7 +189,7 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 |---|---|---|---|
 | img_032 | 候補 0 件 | — | `C_NO_CARD`（`C_ASPECT`×5, `C_PERSPECTIVE`×1, `C_AREA`×1） |
 | img_3c70 | 候補 0 件 | — | `C_NO_CARD`（`C_TOUCHES_BORDER`×2, `C_PERSPECTIVE`×1, `C_AREA`×1） |
-| img_838 | 候補 0 件 | — | `C_NO_CARD`（`C_ANGLE`×3, `C_NOT_QUAD`×2, `C_FRAME_FILLED`×1） |
+| img_838 | 候補 0 件 | — | `C_NO_CARD`（`C_ANGLE`×3。外枠はカード比だが画像全体の照合 ZNCC 0.109 < 0.40 なので `C_FRAME_FILLED` は付けない） |
 
 実写真は**カード四辺が一意に取れない**（解像度と撮影条件の両方）。ここを緩める変更はしていません。
 
