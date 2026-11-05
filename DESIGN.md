@@ -141,7 +141,12 @@ README の表を参照。コードは `donor_mask/` の各段が理由コード�
 **未実装（v1 で先送り。呼ぶと終了コード 1 と「未実装」）**
 - `calibrate`、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあるが CLI 化していない）。`rectify` は実装済みだが、テンプレートに対する最良の非鏡像仮説を直して 5% グリッドを焼くだけ（判定はしない）。`template-build` は実装済み（`donor_mask/build.py`。§5 の C1）。
 - `labels.jsonl`・レビュー判定の記録、ok 全件のコンタクトシート目視、`donor-mask` というコマンド名（`python -m donor_mask` で動かす）。
-- 実物様式のテンプレート。同梱は合成（`synthetic_back_v1` positive、`synthetic_front_v1` / `synthetic_other_v1` negative）のみ。
+- 実物様式のテンプレートは**暫定版のみ**。同梱は合成（`synthetic_back_v1` positive、`synthetic_front_v1` / `synthetic_other_v1` negative）と、実写真3枚（**同一カードの3撮影**）から作った `real_back_v1`（positive、`n_samples=3` / `min_samples_met: false`）。
+  - 実測（正規化 1011×638。罫線込みの和集合）: `field_rect` = x 40〜971 / y 300〜597、`protected_rects` = x 56〜955 / y 52〜298、`ignore_rects` = 宣言ブロック全体。
+  - **F（欄の枠罫線）は無い**（長い縦罫線は x≈56 / x≈950 の y≈52〜298 のみ。`detect_frame` が拾えるのはカード外周の枠＝IoU(T,F) 0.43）。**A（印刷された□/○3連）も無い**（等サイズ・等間隔の3連は 0 組）。実在する手がかりは**数字3連 y=362-386 / 392-416 / 422-443（ピッチ 30px）**だけ。
+  - したがって `required_cues = ["T","F"]`（`anchor_type: "none"` では A 必須にできず、T だけも不可）となり、S6 は必ず `F_FRAME_NOT_FOUND` か `F_CUE_DISAGREE` で review。**実カードの ok 経路は開かない（fail-closed は維持）**。
+  - 実測の停止点: 実写真3枚は既定で S0 `Q_LOW_RES`（554〜696px < 800）、解像度ゲートだけ 200px に下げた診断でも S1 候補 0 件（`C_ASPECT`/`C_PERSPECTIVE`/`C_TOUCHES_BORDER`/`C_ANGLE`/`C_FRAME_FILLED`）。正規化カード＋灰色余白 60px では S2 の ZNCC が 0.794 / 0.567 / 0.557 まで出るが S3 が `O_AMBIGUOUS`（鏡像仮説との差 0.034〜0.087 < 0.10）。S7 は保護領域との隙間が 2px のため `M_PROTECTED_CONFLICT`（`pad_after_shrink=-1.0 < 6`）。合成テンプレートとの ZNCC は +0.005 / +0.022 / +0.069（実テンプレート相手は +0.784 / +0.534 / +0.526）。
+  - 未了: 数字3連を新しい `anchor_type` として定義するか、F を「上下罫線ペア」に再定義するか（現行 `detect_frame` は単一連結成分の外接矩形＋周長支持率 0.85 なので、上下だけの枠は支持率 ~0.5 で通らない）。S7 余白規則の実様式対応。様式差の検証（3枚は同一カード）。
 - 合成テストの変換グリッドは設計書 6.1 の全直積ではなく、一因子ずつ＋複合の固定サンプル。肌色楕円・白飛び楕円・σ=4 のぼけ・枠だけ・3 連が 2 組・はみ出しストロークは実装済み。
 
 **設計書から意図して変えた／補った点**

@@ -168,13 +168,23 @@ def test_changed_threshold_changes_config_hash(tmp_path):
 
 
 def test_committed_templates_match_generator(cfg, tmp_path):
-    """templates/ は tools/build_synthetic_templates.py の出力と一致する（手作業で書き換えていない）。"""
+    """合成テンプレート（templates/synthetic_*）は tools/build_synthetic_templates.py の出力と一致する
+    （手作業で書き換えていない）。実様式テンプレートは実写真から作るので、生成器の比較対象外
+    （`synthetic: false` の明示があることだけを確認する）。"""
     sys.path.insert(0, str(ROOT / "tools"))
     import build_synthetic_templates as b
     b.main(tmp_path / "t")
-    _, h1 = load_templates(tmp_path / "t", cfg)
-    _, h2 = load_templates(ROOT / "templates", cfg)
-    assert h1 == h2
+    generated, _ = load_templates(tmp_path / "t", cfg)
+    committed, _ = load_templates(ROOT / "templates", cfg)
+    ids = {t.id for t in committed}
+    assert {t.id for t in generated} <= ids
+    for t in generated:
+        for name in ("template.json", "ruling.png", "print.png"):
+            assert (tmp_path / "t" / t.id / name).read_bytes() == (ROOT / "templates" / t.id / name).read_bytes(), \
+                f"{t.id}/{name}"
+    others = [t for t in committed if t.id not in {g.id for g in generated}]
+    assert all(t.meta.get("synthetic") is False for t in others), \
+        f"生成器の出力でないテンプレートは synthetic: false を明示すること: {[t.id for t in others]}"
 
 
 # ---- 入力デコード

@@ -1,0 +1,49 @@
+{
+  "id": "real_back_v1",
+  "kind": "positive",
+  "label": "back",
+  "synthetic": false,
+  "size": [
+    1011,
+    638
+  ],
+  "window_expand": 0.1,
+  "field_rect": [
+    40.0,
+    300.0,
+    971.0,
+    597.0
+  ],
+  "anchor_type": "none",
+  "anchor": null,
+  "required_cues": [
+    "T",
+    "F"
+  ],
+  "protected_rects": [
+    [
+      56.0,
+      52.0,
+      955.0,
+      298.0
+    ]
+  ],
+  "ignore_rects": [
+    [
+      40.0,
+      300.0,
+      971.0,
+      597.0
+    ]
+  ],
+  "expected_mask_area": 345553.56,
+  "n_samples": 3,
+  "min_samples_required": 5,
+  "min_samples_met": false,
+  "align_correlations": [
+    1.0,
+    0.8847,
+    0.9005
+  ],
+  "note": "実様式（同一カード3撮影・暫定）。field_rect は罫線込みの和集合。F は単一連結成分の枠として実在せず、実カードは F_FRAME_NOT_FOUND で review（fail-closed）。A は anchor_type=none のため必須にできない。"
+}
