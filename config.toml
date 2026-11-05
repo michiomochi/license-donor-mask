@@ -3,7 +3,7 @@
 
 [input]
 max_pixels = 50000000          # E_TOO_LARGE
-min_long_edge_px = 800         # Q_LOW_RES（入力画像・カード長辺の両方）
+min_card_long_edge_px = 400     # Q_LOW_RES: S1 後の、元画像上のカード長辺(px)の下限（入力画像の長辺ではない）。暫定。根拠は DESIGN.md §S5
 
 [canvas]
 width = 1011                   # 85.6mm x 54mm の正規化キャンバス（約11.81px/mm）

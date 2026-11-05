@@ -144,8 +144,8 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 | 見本 | カード検出 | 向き | 検出された欄 | 被覆率 | verified | 結果 |
 |---|---|---|---|---|---|---|
-| kumaisui_driver_license.png | 未実施（S0 で停止） | — | — | — | — | **review**（終了コード 3）`Q_LOW_RES`: 長辺 340px < 800px |
-| mhlw_intention_01.jpg | 未実施（S0 で停止） | — | — | — | — | **review** `Q_LOW_RES`: 長辺 520px < 800px |
+| kumaisui_driver_license.png | 未実施（S0 で停止） | — | — | — | — | **review**（終了コード 3）`Q_LOW_RES`: 長辺 340px < 800px（当時の仕様。現在は入力画像の長辺ではなくカード長辺 ≥ 400px で判定） |
+| mhlw_intention_01.jpg | 未実施（S0 で停止） | — | — | — | — | **review** `Q_LOW_RES`: 長辺 520px < 800px（当時の仕様。同上） |
 
 解像度ゲートを診断用に 200px へ下げた実行（`min_long_edge_px = 200` の一時設定。既定値は変えていません）:
 
