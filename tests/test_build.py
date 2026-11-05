@@ -196,3 +196,34 @@ def test_pipeline_keeps_frame_filled_out_of_ok():
     # pipeline 側に「枠いっぱいなら全体をカードとみなす」経路が無いこと
     psrc = inspect.getsource(pipeline.process_file)
     assert "FRAME_FILLED" not in psrc and "frame_filled" not in psrc
+
+
+F_RULES_SPEC = {
+    "h_lines": [{"y": [70.0, 80.0], "x": [60.0, 900.0]},
+                {"y": [300.0, 310.0], "x": [300.0, 700.0]},
+                {"y": [400.0, 410.0], "x": [300.0, 700.0]}],
+    "v_lines": [{"x": [40.0, 60.0], "y": [300.0, 400.0]},
+                {"x": [900.0, 920.0], "y": [60.0, 200.0]}],
+}
+
+
+def test_spec_f_rules_goes_through_to_template_json(cfg, tmp_path):
+    """--spec の f_rules は build の許可キーに入っていて、そのまま template.json に書かれ、ローダーが読める。"""
+    assert "f_rules" in build.META_KEYS
+    d = write_samples(tmp_path / "in", 3)
+    specp = tmp_path / "spec.json"
+    specp.write_text(json.dumps(dict(SPEC, f_rules=F_RULES_SPEC), ensure_ascii=False), encoding="utf-8")
+    out = tmp_path / "t" / "frules_v1"
+    assert cli.main(["template-build", "--in", str(d), "--out", str(out), "--id", "frules_v1",
+                     "--spec", str(specp), "--allow-fewer"]) == 0
+    written = json.loads((out / "template.json").read_text(encoding="utf-8"))
+    assert written["f_rules"] == F_RULES_SPEC
+    tmpls, _ = load_templates(out.parent, cfg)
+    assert next(t for t in tmpls if t.id == "frules_v1").meta["f_rules"] == F_RULES_SPEC
+
+
+def test_spec_without_f_rules_writes_null(cfg, tmp_path):
+    d = write_samples(tmp_path / "in", 3)
+    meta = build.build_template(sorted(d.iterdir()), tmp_path / "t" / "nof_v1", cfg, template_id="nof_v1",
+                                spec=SPEC, allow_fewer=True)
+    assert meta["f_rules"] is None

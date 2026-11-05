@@ -73,11 +73,19 @@ def cmd_run(a) -> int:
         return 1
     out.mkdir(parents=True, exist_ok=True)
     results, halted = [], False
+    diagnostic = bool(getattr(a, "diagnostic", False))
     for f in files:
-        rec, halt = pipeline.process_file(f, out, cfg, templates, tsha, fill=a.fill, shadow=a.shadow)
-        results.append(rec)
-        codes = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
-        print(f"[{rec['status']}] {f.name} -> job {rec['job_id']}" + (f"  reasons: {codes}" if codes else ""))
+        if diagnostic:  # 診断: 全段のメトリクスをログに残す。ok/ には何も書かない（status は常に review）
+            rec, halt = pipeline.diagnose_file(f, out, cfg, templates, tsha)
+            results.append(rec)
+            stg = " ".join(f"{s}={v}" for s, v in pipeline.stage_summary(rec).items() if s != "S9")
+            codes = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
+            print(f"[diag] {f.name} {stg + ' ' if stg else ''}-> {rec['status']}" + (f"  reasons: {codes}" if codes else ""))
+        else:
+            rec, halt = pipeline.process_file(f, out, cfg, templates, tsha, fill=a.fill, shadow=a.shadow)
+            results.append(rec)
+            codes = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
+            print(f"[{rec['status']}] {f.name} -> job {rec['job_id']}" + (f"  reasons: {codes}" if codes else ""))
         if halt:
             why = ",".join(dict.fromkeys(r["code"] for r in rec["reasons"]))
             print(f"[FATAL] 原本が処理中に変化、または ok/ の後始末に失敗しました（{why}）。バッチを停止します",
@@ -86,7 +94,8 @@ def cmd_run(a) -> int:
             break
     shas = sorted(r["input"].get("sha256", r["job_id"]) for r in results)
     set8 = hashlib.sha256("\n".join(shas).encode()).hexdigest()[:8]
-    summary = {"schema_version": 1, "config_sha256": cfg.sha256, "templates_sha256": tsha, "fill": a.fill,
+    summary = {"schema_version": 1, "mode": "diagnostic" if diagnostic else "run",
+               "config_sha256": cfg.sha256, "templates_sha256": tsha, "fill": a.fill,
                "shadow": a.shadow, "halted": halted,
                "counts": {s: sum(1 for r in results if r["status"] == s) for s in ("ok", "review", "error")},
                "jobs": [{"job_id": r["job_id"], "status": r["status"],
@@ -208,7 +217,11 @@ def build_parser():
     r.add_argument("--in", dest="inp", required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--fill", choices=sorted(pipeline.FILL_COLORS), default="black", help="単色のみ。既定 black")
-    r.add_argument("--shadow", action="store_true", help="ok 相当でも ok/ に出さず全件 review（提案をレビュー画像に描く）")
+    mode = r.add_mutually_exclusive_group()
+    mode.add_argument("--shadow", action="store_true", help="ok 相当でも ok/ に出さず全件 review（提案をレビュー画像に描く）")
+    mode.add_argument("--diagnostic", action="store_true",
+                      help="診断: 各段の fail を記録するだけで先の段へ進み、全段のメトリクスを logs/<job_id>.json に残す。"
+                           "status は常に review。ok/ にも review/ にも何も書かない。--shadow とは同時に指定できない")
     common(r)
     rc = sub.add_parser("rectify", help="校正用: 正規化画像と5%%グリッド画像を出す（出力先はアクセス制限ディレクトリに）")
     rc.add_argument("--in", dest="inp", required=True)
@@ -226,7 +239,7 @@ def build_parser():
     tb.add_argument("--kind", choices=("positive", "negative"), default="positive")
     tb.add_argument("--label", default="back")
     tb.add_argument("--spec", help="測定値のJSON（field_rect / anchor_type / anchor / required_cues / "
-                                  "protected_rects / ignore_rects / window_expand / expected_mask_area / note）")
+                                  "protected_rects / ignore_rects / window_expand / expected_mask_area / note / f_rules）")
     tb.add_argument("--allow-fewer", action="store_true",
                     help="min_samples 未満でも暫定テンプレートとして書く（min_samples_met=false）")
     tb.add_argument("--min-samples", type=int, default=None, help="既定は config.toml [calibrate] min_samples")

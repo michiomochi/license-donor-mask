@@ -47,6 +47,8 @@ def _read_png(p: Path):
 
 CUES = ("T", "F", "A")
 ANCHOR_TYPES = ("box3", "circle3", "none")
+# f_rules の1本の線分のバンド幅の上限(px)。バンドを広げると F が弱まる（しきい値を緩めるのと同じ）ため。現行の最大は v0 の 17px
+MAX_RULE_BAND_PX = 20
 
 
 def _validate_cues_and_anchor(name: str, meta: dict):
@@ -112,6 +114,9 @@ def _validate_f_rules(name: str, meta: dict, size, ):
                 raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{band_key} は lo < hi")
             if span[1] <= span[0]:
                 raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{span_key} は lo < hi")
+            if band[1] - band[0] > MAX_RULE_BAND_PX:
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{band_key} のバンド幅が広すぎる（F を弱める）: "
+                                  f"{band[1] - band[0]:g}px > 上限 {MAX_RULE_BAND_PX}px")
             if not (0 <= band[0] <= band[1] <= limit):
                 raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{band_key} がキャンバス外")
             other = W if key == "h_lines" else H

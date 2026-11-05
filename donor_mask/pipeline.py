@@ -109,9 +109,9 @@ def sig12(x):
     return x
 
 
-def new_rec(path, cfg, tmpl_sha):
+def new_rec(path, cfg, tmpl_sha, mode="run"):
     return {
-        "schema_version": SCHEMA_VERSION, "job_id": None,
+        "schema_version": SCHEMA_VERSION, "mode": mode, "job_id": None,
         "input": {"path": str(Path(path).resolve())},
         "versions": {"tool": __version__, "python": platform.python_version(), "opencv": cv2.__version__,
                      "numpy": np.__version__},
@@ -443,3 +443,215 @@ def _finish(rec, out_dir, pp, cands, ctx, t0):
     rec["geometry"] = sig12(geom) if geom is not None else None
     pp["log"].write_text(json.dumps(rec, ensure_ascii=False, indent=2, sort_keys=False), encoding="utf-8")
     return rec
+
+
+# ---------------------------------------------------------------- 診断（run --diagnostic。設計 §1.1a）
+STAGE_NAMES = ("S0", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9")
+DIAG_NO_WRITE = "書き出しは run のみ"
+
+
+def stage_summary(rec):
+    """段ごとの 'pass' / 'fail' / 'skip'（ログの stages と reasons から導く。診断の1行表示用）。"""
+    failed = {r.get("stage") for r in rec["reasons"]}
+    out = {}
+    for s in STAGE_NAMES:
+        st = rec["stages"].get(s)
+        if st is None:
+            continue
+        out[s] = "skip" if isinstance(st, dict) and "skipped" in st else ("fail" if s in failed else "pass")
+    return out
+
+
+def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
+    """(rec, halt)。段の fail を記録するだけで先の段へ進み、可能な限り全段のメトリクスをログに残す。
+
+    本番経路（process_file）は通らず、同じ段関数・検証関数を呼ぶ。status は常に review。ok/ にも review/ にも
+    何も書かない（書くのは out/logs/<job_id>.json だけ）。前段の結果が無くて計算できない段は、値を推測せず
+    {"skipped": "<前提段>"} を残す。理由コードは通常経路と同じ（落ちた段の理由が全部 rec.reasons に残る）。
+    """
+    path, out_dir = Path(path), Path(out_dir)
+    t0 = time.perf_counter()
+    rec = new_rec(path, cfg, tmpl_sha, mode="diagnostic")
+    rec["nondeterministic"]["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    reasons, halt = [], False
+
+    def note(stage, rs):
+        reasons.extend(clean(dict(r, stage=stage)) for r in rs)
+
+    def call(stage, fn, *a):
+        """段の呼び出し。想定外の例外は X_EXCEPTION として記録し、None を返して先へ進む。"""
+        try:
+            return _run(stage, fn, *a)
+        except StageFail as sf:
+            note(stage, sf.reasons)
+            rec["stages"].setdefault(stage, {"failed": sf.reasons[0]["code"]})
+            return None
+
+    def skip(stages, because):
+        for st in stages:
+            _add(rec, st, {"skipped": because})
+
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        rec["job_id"] = "unreadable_" + imgio.sha256_bytes(str(path.resolve()).encode())[:8]
+        rec["status"] = "review"
+        rec["reasons"] = [{"code": "X_IO", "stage": "S0", "metric": type(e).__name__, "value": str(e)[:200],
+                           "threshold": None}]
+        return _finish(rec, out_dir, None, [], {}, t0), False
+    sha = imgio.sha256_bytes(data)
+    rec["job_id"] = sha[:16]
+    before = imgio.file_state(path)
+    rec["input"].update({"sha256": sha, "bytes": len(data), "mtime_ns": before["mtime_ns"]})
+    pp = _out_paths(out_dir, rec["job_id"])
+    if pp["log"].exists():  # 既存ログは上書きしない（job_id は通常 run と同じ。別の出力先を使う）
+        rec["status"] = "error"
+        rec["reasons"] = [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "exists", "value": True,
+                           "threshold": False}]
+        rec["_no_write"] = True
+        return rec, False
+
+    got = {}  # S8 に渡すもの: img / tmpl / rect / geom
+
+    def stages():
+        """S0〜S7。前提が揃わない段は skipped を残して return（以降の段も連鎖して skipped）。"""
+        # S0
+        try:
+            img, info = imgio.decode(data, int(cfg.input.max_pixels))
+        except imgio.InputError as e:
+            note("S0", [{"code": e.code, "metric": "decode", "value": e.msg, "threshold": None}])
+            _add(rec, "S0", {"failed": e.code})
+            return skip(("S1", "S2", "S3", "S4", "S5", "S6", "S7"), "S0")
+        got["img"] = img
+        rec["input"].update(info)
+        long_edge = max(img.shape[:2])
+        _add(rec, "S0", {"long_edge_px": long_edge})
+        if long_edge < cfg.input.min_long_edge_px:
+            note("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
+                         "threshold": cfg.input.min_long_edge_px}])
+        # S1
+        res = call("S1", s1_candidates, img, cfg)
+        cands = res["candidates"] if res else []
+        if res:
+            _add(rec, "S1", {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]}
+                                            for c in cands], "rejected": res["rejected"]})
+            if not cands:
+                rs = [{"code": "C_NO_CARD", "metric": "candidates", "value": 0, "threshold": 1}]
+                for code, n in sorted(res["rejected"].items()):
+                    if code != "C_NOT_QUAD":
+                        rs.append({"code": code, "metric": "rejected_candidates", "value": n, "threshold": 0})
+                note("S1", rs)
+            elif len(cands) > cfg.card.max_candidates:
+                note("S1", [{"code": "C_TOO_MANY_CANDIDATES", "metric": "candidates", "value": len(cands),
+                             "threshold": cfg.card.max_candidates}])
+        if not cands:
+            return skip(("S2", "S3", "S4", "S5", "S6", "S7"), "S1")
+        # S2 / S3
+        hyps = call("S2", s2_score, img, cands, templates, cfg)
+        if hyps is None:
+            return skip(("S3", "S4", "S5", "S6", "S7"), "S2")
+        top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
+        _add(rec, "S2", {"n_hypotheses": len(hyps),
+                         "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")} for h in top]})
+        r3 = call("S3", s3_select, hyps, cands, cfg, templates)
+        best = None
+        if r3:
+            best, second, mirror, rs = r3
+            mirror = dict(mirror or {})
+            if str(cfg.select.mirror_m3) == "unimplemented":
+                mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
+                                "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+            _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
+            if rs:
+                note("S3", rs)
+        tmpl = next((t for t in templates if best is not None and t.id == best["template"]), None)
+        if tmpl is None or not tmpl.positive:  # 対象様式（positive）を選べていない。S4 以降は意味を持たない
+            return skip(("S4", "S5", "S6", "S7"), "S3")
+        got["tmpl"] = tmpl
+        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        # S4
+        nm = call("S4", orient.normalize, img, quad, cfg)
+        r4 = call("S4", s4_align, nm[0], tmpl, cfg) if nm else None
+        if r4:
+            _add(rec, "S4", r4[1])
+            if r4[2]:
+                note("S4", r4[2])
+        if r4 is None or r4[0] is None:
+            return skip(("S5", "S6", "S7"), "S4")
+        M10, A10 = np.array(sig12(nm[1])), np.array(sig12(r4[0]))
+        P = np.array(sig12(orient.template_to_orig(M10, A10)))
+        aligned = orient.aligned_image(img, P, cfg)
+        # S5（落ちても S6 以降は計算する）
+        e = edge_lengths(quad)
+        card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
+        r5 = call("S5", s5_quality, aligned, tmpl, card_long, cfg)
+        if r5:
+            met, rs = r5
+            if card_long < cfg.input.min_long_edge_px:
+                rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
+                            "threshold": cfg.input.min_long_edge_px}]
+            _add(rec, "S5", met)
+            if rs:
+                note("S5", rs)
+        # S6
+        r6 = call("S6", s6_locate, aligned, tmpl, cfg)
+        if r6:
+            _add(rec, "S6", r6[1])
+            if r6[2]:
+                note("S6", r6[2])
+        if r6 is None or r6[0] is None:
+            return skip(("S7",), "S6")
+        cues = r6[0]
+        # S7
+        r7 = call("S7", s7_mask, aligned, tmpl, cues, cfg)
+        if r7:
+            _add(rec, "S7", r7[1])
+            if r7[2]:
+                note("S7", r7[2])
+        if r7 is None or r7[0] is None:
+            return
+        rect = r7[0]
+        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
+                "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
+                "mask_rect": [float(v) for v in rect], "mask_polygon": polygon,
+                "fill_bgr": list(FILL_COLORS["black"])}
+        rec["geometry"] = sig12(geom)
+        got["geom"] = rec["geometry"]
+
+    def verify_stage():
+        """S8（S7 の rect が取れたときだけ）。塗った画像はメモリ上だけで、どこにも書かない。"""
+        img, g, tmpl = got["img"], got["geom"], got["tmpl"]
+        m = verify.make_mask(img.shape, g["mask_polygon"], int(cfg.mask.grow_px))
+        out = img.copy()
+        out[m] = np.array(FILL_COLORS["black"], np.uint8)
+        vr = verify.verify_all(orig_arr=img, masked_arr=out, geom=g, tmpl=tmpl, cfg=cfg,
+                               fill_bgr=FILL_COLORS["black"], orig_path=path, orig_before=before)
+        return vr
+
+    try:
+        stages()
+        if got.get("geom") is None:
+            skip(("S8",), "S7")
+            skip(("S9",), "S8")
+        else:
+            vr = call("S8", verify_stage)
+            if vr is not None:
+                _add(rec, "S8", {k: vr[k] for k in ("V1", "V2", "V3", "V4", "V5", "V6")})
+                if not vr["V6"]["pass"]:
+                    halt = True
+                if not vr["pass"]:
+                    note("S8", verify.failed_reasons(vr))
+            skip(("S9",), DIAG_NO_WRITE)
+    except Exception as e:  # 診断自体の想定外。理由に残して review のまま（ok にはしない）
+        note("S9", [{"code": "X_EXCEPTION", "metric": type(e).__name__, "value": str(e)[:200], "threshold": None}])
+        for s in STAGE_NAMES:
+            rec["stages"].setdefault(s, {"skipped": "X_EXCEPTION"})
+    # 原本が変わっていないこと（診断も原本は読むだけ）
+    if not _check_original(rec, path, before):
+        halt = True
+        note("S9", [{"code": "X_ORIGINAL_CHANGED", "metric": "sha256_mtime", "value": False, "threshold": True}])
+    rec["status"] = "review"
+    rec["reasons"] = reasons
+    return _finish(rec, out_dir, pp, [], {}, t0), halt
