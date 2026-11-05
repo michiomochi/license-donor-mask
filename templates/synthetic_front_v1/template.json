@@ -1,0 +1,11 @@
+{
+  "id": "synthetic_front_v1",
+  "kind": "negative",
+  "label": "front",
+  "synthetic": true,
+  "size": [
+    1011,
+    638
+  ],
+  "note": "表面相当の合成レイアウト（一致したら O_FRONT_SIDE）"
+}

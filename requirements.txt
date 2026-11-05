@@ -1,0 +1,4 @@
+# 本番処理の依存はこの2つだけ（Python 3.11 以上。設定は標準ライブラリの tomllib）
+# ML モデル・OCR・クラウド API・ネットワークライブラリは使わない
+opencv-python-headless==5.0.0.93
+numpy==2.4.6

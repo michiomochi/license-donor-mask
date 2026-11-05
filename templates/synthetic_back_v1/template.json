@@ -1,0 +1,59 @@
+{
+  "id": "synthetic_back_v1",
+  "kind": "positive",
+  "label": "back",
+  "synthetic": true,
+  "size": [
+    1011,
+    638
+  ],
+  "field_rect": [
+    330,
+    340,
+    950,
+    610
+  ],
+  "window_expand": 0.1,
+  "anchor_type": "box3",
+  "anchor": {
+    "side": 28,
+    "pitch": 60,
+    "centers": [
+      [
+        366.0,
+        409.0
+      ],
+      [
+        366.0,
+        469.0
+      ],
+      [
+        366.0,
+        529.0
+      ]
+    ]
+  },
+  "required_cues": [
+    "T",
+    "F",
+    "A"
+  ],
+  "protected_rects": [
+    [
+      24,
+      330,
+      290,
+      600
+    ]
+  ],
+  "ignore_rects": [
+    [
+      330,
+      40,
+      950,
+      300
+    ]
+  ],
+  "expected_mask_area": 216734.4,
+  "note": "SYNTHETIC_TEST レイアウト用。実物の様式ではない"
+}

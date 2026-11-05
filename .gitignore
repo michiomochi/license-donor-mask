@@ -1,0 +1,34 @@
+# 仮想環境・キャッシュ
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 処理出力（個人情報を含みうる。リポジトリに入れない）
+/out/
+/output/
+**/ok/
+**/review/
+**/logs/
+*__masked.png
+*__preview.jpg
+*__review.jpg
+*__rect*
+*__orig_grid*
+*_grid*.jpg
+
+# ダウンロードした見本画像・実画像（権利・個人情報の都合でコミットしない。出典URLは README に記載）
+/samples/
+/real/
+/mask_test/
+kumaisui_*
+mhlw_*
+
+# 画像は原則コミットしない。例外: 合成テンプレート（templates/ 配下の PNG）
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.heic
+!templates/**/*.png

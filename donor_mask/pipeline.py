@@ -1,0 +1,387 @@
+"""S0〜S9 の統括。各段は「値＋理由コード」を返し、1つでも fail なら review（ok を出さない）。
+
+段の関数（s0_load … s8 の部品）はモジュール属性として呼び出すので、テストで差し替えて例外注入・位置ずれ注入ができる。
+全体を包む try/except は例外を握り潰して ok にするのではなく、X_EXCEPTION として review にする。
+"""
+from __future__ import annotations
+
+import json
+import os
+import platform
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+import cv2
+import numpy as np
+
+from . import __version__, card, field, imgio, mask, orient, quality, verify
+from .geom import apply_h, edge_lengths, hypothesis_quads, order_quad, polygon_mask, r4, rect_poly
+
+FILL_COLORS = {"black": (0, 0, 0), "white": (255, 255, 255)}  # BGR。単色のみ（noise/ぼかし/モザイクは実装しない）
+SCHEMA_VERSION = 1
+
+
+class StageFail(Exception):
+    def __init__(self, stage: str, reasons: list):
+        super().__init__(stage)
+        self.stage, self.reasons = stage, reasons
+
+
+def _fail(stage, reasons):
+    raise StageFail(stage, [dict(r, stage=stage) for r in reasons])
+
+
+def _run(stage, fn, *a, **kw):
+    """段の呼び出し。想定外の例外は X_EXCEPTION（握り潰して ok にはしない）。"""
+    try:
+        return fn(*a, **kw)
+    except StageFail:
+        raise
+    except Exception as e:
+        raise StageFail(stage, [{"code": "X_EXCEPTION", "stage": stage, "metric": type(e).__name__,
+                                 "value": str(e)[:200], "threshold": None}]) from e
+
+
+# ---------------------------------------------------------------- 段の関数（差し替え可能）
+def s0_load(path, cfg):
+    return imgio.read_original(Path(path), int(cfg.input.max_pixels))
+
+
+def s1_candidates(img, cfg):
+    return card.find_candidates(img, cfg)
+
+
+def s2_score(img, cands, templates, cfg):
+    return orient.score_hypotheses(img, cands, templates, cfg)
+
+
+def s3_select(hyps, cands, cfg):
+    return orient.select_unique(hyps, cands, cfg)
+
+
+def s4_align(norm, tmpl, cfg):
+    return orient.refine_alignment(norm, tmpl, cfg)
+
+
+def s5_quality(aligned, tmpl, card_long, cfg):
+    return quality.check_quality(aligned, tmpl, card_long, cfg)
+
+
+def s6_locate(aligned, tmpl, cfg):
+    return field.locate_field(aligned, tmpl, cfg)
+
+
+def s7_mask(aligned, tmpl, cues, cfg):
+    return mask.build_mask_rect(aligned, tmpl, cues, cfg)
+
+
+# ---------------------------------------------------------------- ログ
+def clean(x, nd=4):
+    """JSON 化（numpy 型の変換と桁の固定。同じ入力・設定ならログが完全一致するように）。"""
+    if isinstance(x, dict):
+        return {str(k): clean(v, nd) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [clean(v, nd) for v in x]
+    if isinstance(x, np.ndarray):
+        return clean(x.tolist(), nd)
+    if isinstance(x, (np.floating, float)):
+        return round(float(x), nd)
+    if isinstance(x, np.integer):
+        return int(x)
+    if isinstance(x, np.bool_):
+        return bool(x)
+    return x
+
+
+def sig12(x):
+    """幾何（射影行列など）は小数桁ではなく有効数字12桁で固定する。透視項が 1e-7 程度で、桁丸めだと数 px ずれるため。"""
+    if isinstance(x, dict):
+        return {k: sig12(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [sig12(v) for v in x]
+    if isinstance(x, np.ndarray):
+        return sig12(x.tolist())
+    if isinstance(x, (np.floating, float)):
+        return float(f"{float(x):.12g}")
+    if isinstance(x, np.integer):
+        return int(x)
+    return x
+
+
+def new_rec(path, cfg, tmpl_sha):
+    return {
+        "schema_version": SCHEMA_VERSION, "job_id": None,
+        "input": {"path": str(Path(path).resolve())},
+        "versions": {"tool": __version__, "python": platform.python_version(), "opencv": cv2.__version__,
+                     "numpy": np.__version__},
+        "config_sha256": cfg.sha256, "templates_sha256": tmpl_sha,
+        "status": None, "reasons": [], "stages": {}, "geometry": None,
+        "outputs": {"masked": None, "masked_sha256": None, "preview": None, "review": None},
+        "original_unchanged": None,
+        "nondeterministic": {"started_at": None, "elapsed_ms": None},
+    }
+
+
+def _add(rec, stage, value):
+    rec["stages"][stage] = clean(value)
+
+
+def _out_paths(out_dir: Path, job: str):
+    return {"masked": out_dir / "ok" / f"{job}__masked.png", "preview": out_dir / "ok" / f"{job}__preview.jpg",
+            "review": out_dir / "review" / f"{job}__review.jpg", "log": out_dir / "logs" / f"{job}.json",
+            "staging": out_dir / "ok" / ".staging" / f"{job}__masked.png"}
+
+
+# ---------------------------------------------------------------- 描画
+def _scaled(img, long_edge=1600):
+    s = min(1.0, long_edge / max(img.shape[:2]))
+    return (cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA) if s < 1 else img.copy()), s
+
+
+def _label(img, lines, color=(255, 255, 255)):
+    y = 22
+    for t in lines:
+        t = t.encode("ascii", "replace").decode()
+        cv2.putText(img, t, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 3, cv2.LINE_AA)
+        cv2.putText(img, t, (8, y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
+        y += 22
+
+
+def draw_review(img, cands, ctx, reasons, proposal=None):
+    """原本に検出結果（候補四辺・T/F/A・理由コード）を重ねる。マスク前の画像なので欄の中身が見える（取扱注意）。"""
+    vis, s = _scaled(img)
+    lw = max(2, int(max(vis.shape[:2]) / 500))
+    for c in cands or []:
+        cv2.polylines(vis, [np.round(np.asarray(c["quad"]) * s).astype(np.int32)], True, (0, 200, 0), lw, cv2.LINE_AA)
+    P = ctx.get("P_t2o")
+    cues = ctx.get("cues")
+    if P is not None and cues:
+        for key, col in (("T", (255, 128, 0)), ("F", (0, 200, 255)), ("A", (255, 0, 255))):
+            r = cues.get(key)
+            if r:
+                cv2.polylines(vis, [np.round(apply_h(P, rect_poly(r)) * s).astype(np.int32)], True, col, lw, cv2.LINE_AA)
+    if proposal is not None:
+        cv2.polylines(vis, [np.round(np.asarray(proposal) * s).astype(np.int32)], True, (0, 0, 255), lw + 1, cv2.LINE_AA)
+    codes = []
+    for r in reasons:
+        if r["code"] not in codes:
+            codes.append(r["code"])
+    _label(vis, ["REVIEW (not masked): " + " ".join(codes[:6])], (0, 255, 255))
+    return vis
+
+
+def draw_preview(masked, polygon, quad):
+    """マスク後の画像に、マスク枠（赤）とカード四辺（緑）を重ねる。欄の中身は写らない。"""
+    vis, s = _scaled(masked)
+    lw = max(2, int(max(vis.shape[:2]) / 500))
+    cv2.polylines(vis, [np.round(np.asarray(polygon) * s).astype(np.int32)], True, (0, 0, 255), lw, cv2.LINE_AA)
+    cv2.polylines(vis, [np.round(np.asarray(quad) * s).astype(np.int32)], True, (0, 200, 0), max(1, lw // 2), cv2.LINE_AA)
+    return vis
+
+
+# ---------------------------------------------------------------- 1件の処理
+def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=False):
+    """(rec, halt)。halt=True は原本が変化した（V6 失敗）ためバッチ全体を止める合図。"""
+    path, out_dir = Path(path), Path(out_dir)
+    t0 = time.perf_counter()
+    rec = new_rec(path, cfg, tmpl_sha)
+    rec["nondeterministic"]["started_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    fill_bgr = FILL_COLORS[fill]
+    ctx, cands, img, halt = {}, [], None, False
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        rec["job_id"] = "unreadable_" + imgio.sha256_bytes(str(path.resolve()).encode())[:8]
+        rec["status"] = "error"
+        rec["reasons"] = [{"code": "X_IO", "stage": "S0", "metric": type(e).__name__, "value": str(e)[:200],
+                           "threshold": None}]
+        return _finish(rec, out_dir, None, [], ctx, t0), False
+    sha = imgio.sha256_bytes(data)
+    job = sha[:16]
+    rec["job_id"] = job
+    before = imgio.file_state(path)
+    rec["input"].update({"sha256": sha, "bytes": len(data), "mtime_ns": before["mtime_ns"]})
+    pp = _out_paths(out_dir, job)
+    if any(pp[k].exists() for k in ("masked", "preview", "review", "log")):  # 既存出力は上書きしない
+        rec["status"] = "error"
+        rec["reasons"] = [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "exists", "value": True,
+                           "threshold": False}]
+        rec["_no_write"] = True
+        return rec, False
+
+    try:
+        # S0
+        try:
+            img, info = imgio.decode(data, int(cfg.input.max_pixels))
+        except imgio.InputError as e:
+            code = e.code
+            rec["status"] = "error" if code == "E_DECODE" else "review"
+            raise StageFail("S0", [{"code": code, "stage": "S0", "metric": "decode", "value": e.msg,
+                                    "threshold": None}])
+        rec["input"].update(info)
+        long_edge = max(img.shape[:2])
+        _add(rec, "S0", {"long_edge_px": long_edge})
+        if long_edge < cfg.input.min_long_edge_px:
+            _fail("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
+                          "threshold": cfg.input.min_long_edge_px}])
+        # S1
+        res = _run("S1", s1_candidates, img, cfg)
+        cands = res["candidates"]
+        _add(rec, "S1", {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in cands],
+                         "rejected": res["rejected"]})
+        if not cands:
+            rs = [{"code": "C_NO_CARD", "metric": "candidates", "value": 0, "threshold": 1}]
+            for code, n in sorted(res["rejected"].items()):
+                if code != "C_NOT_QUAD":
+                    rs.append({"code": code, "metric": "rejected_candidates", "value": n, "threshold": 0})
+            _fail("S1", rs)
+        if len(cands) > cfg.card.max_candidates:
+            _fail("S1", [{"code": "C_TOO_MANY_CANDIDATES", "metric": "candidates", "value": len(cands),
+                          "threshold": cfg.card.max_candidates}])
+        # S2 / S3
+        hyps = _run("S2", s2_score, img, cands, templates, cfg)
+        top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
+        _add(rec, "S2", {"n_hypotheses": len(hyps), "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")}
+                                                            for h in top]})
+        best, second, rs = _run("S3", s3_select, hyps, cands, cfg)
+        _add(rec, "S3", {"best": best, "second": second})
+        if rs:
+            _fail("S3", rs)
+        tmpl = next(t for t in templates if t.id == best["template"])
+        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        # S4
+        norm, M = orient.normalize(img, quad, cfg)
+        A, met, rs = _run("S4", s4_align, norm, tmpl, cfg)
+        _add(rec, "S4", met)
+        if rs or A is None:
+            _fail("S4", rs)
+        M10, A10 = np.array(sig12(M)), np.array(sig12(A))
+        P = np.array(sig12(orient.template_to_orig(M10, A10)))
+        ctx["P_t2o"] = P
+        aligned = orient.aligned_image(img, P, cfg)
+        # S5
+        e = edge_lengths(quad)
+        card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
+        met, rs = _run("S5", s5_quality, aligned, tmpl, card_long, cfg)
+        if card_long < cfg.input.min_long_edge_px:
+            rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
+                        "threshold": cfg.input.min_long_edge_px}]
+        _add(rec, "S5", met)
+        if rs:
+            _fail("S5", rs)
+        # S6
+        cues, met, rs = _run("S6", s6_locate, aligned, tmpl, cfg)
+        _add(rec, "S6", met)
+        if rs or cues is None:
+            _fail("S6", rs)
+        ctx["cues"] = cues
+        # S7
+        rect, met, rs = _run("S7", s7_mask, aligned, tmpl, cues, cfg)
+        _add(rec, "S7", met)
+        if rs or rect is None:
+            _fail("S7", rs)
+        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
+                "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
+                "mask_rect": [float(v) for v in rect], "mask_polygon": polygon, "fill_bgr": list(fill_bgr)}
+        rec["geometry"] = sig12(geom)
+        ctx["polygon"] = polygon
+        # S8: 塗り → 検証（verify.py は原本・出力・ログの幾何だけを使う）
+        g = rec["geometry"]
+        m = verify.make_mask(img.shape, g["mask_polygon"], int(cfg.mask.grow_px))
+        out = img.copy()
+        out[m] = np.array(fill_bgr, np.uint8)
+        vr = verify.verify_all(orig_arr=img, masked_arr=out, geom=g, tmpl=tmpl, cfg=cfg, fill_bgr=fill_bgr,
+                               orig_path=path, orig_before=before)
+        _add(rec, "S8", {k: vr[k] for k in ("V1", "V2", "V3", "V4", "V5", "V6")})
+        if not vr["V6"]["pass"]:
+            halt = True
+        if not vr["pass"]:
+            _fail("S8", verify.failed_reasons(vr))
+        if shadow:
+            _fail("S9", [{"code": "X_SHADOW", "metric": "shadow_mode", "value": True, "threshold": False}])
+        # S9: staging に書く → 読み戻して V2/V3 → os.replace
+        png = imgio.encode_png(out, int(cfg.output.png_compression))
+        for k in ("staging", "masked", "preview", "review"):
+            pp[k].parent.mkdir(parents=True, exist_ok=True)
+        stg = pp["staging"]
+        stg.write_bytes(png)
+        try:
+            back = imgio.read_array(stg)
+            if back is None:
+                raise OSError("読み戻せない")
+            rb2, rb3 = verify.v2_uniform(back, m, fill_bgr), verify.v3_outside(back, img, m)
+            _add(rec, "S9", {"readback_V2": rb2, "readback_V3": rb3})
+            if not (rb2["pass"] and rb3["pass"]):
+                _fail("S9", [{"code": c["code"], "metric": "readback", "value": False, "threshold": True}
+                             for c in (rb2, rb3) if not c["pass"]])
+            v6 = verify.v6_original(path, before)
+            if not v6["pass"]:
+                halt = True
+                _fail("S9", verify.failed_reasons({"V1": vr["V1"], "V2": vr["V2"], "V3": vr["V3"], "V4": vr["V4"],
+                                                   "V5": vr["V5"], "V6": v6}))
+            os.replace(stg, pp["masked"])
+        finally:
+            if stg.exists():
+                stg.unlink()
+        pv = imgio.encode_jpeg(draw_preview(out, polygon, order_quad(cands[best["cand"]]["quad"])),
+                               int(cfg.output.preview_jpeg_quality))
+        pp["preview"].write_bytes(pv)
+        rec["status"] = "ok"
+        rec["outputs"].update({"masked": str(pp["masked"].resolve()), "masked_sha256": imgio.sha256_bytes(png),
+                               "preview": str(pp["preview"].resolve())})
+    except StageFail as sf:
+        if rec["status"] != "error":
+            rec["status"] = "review"
+        rec["reasons"] = [clean(r) for r in sf.reasons]
+        if img is not None:
+            _write_review(rec, pp, img, cands, ctx, sf.reasons, proposal=ctx.get("polygon") if shadow else None, cfg=cfg)
+    except Exception as e:  # ここに来るのは段の外（描画・書き出し等）の想定外。ok にはしない
+        rec["status"] = "review"
+        rec["reasons"] = [{"code": "X_EXCEPTION", "stage": "S9", "metric": type(e).__name__,
+                           "value": str(e)[:200], "threshold": None}]
+        if img is not None:
+            _write_review(rec, pp, img, cands, ctx, rec["reasons"], cfg=cfg)
+    try:
+        after = imgio.file_state(path)
+        rec["original_unchanged"] = after["sha256"] == before["sha256"] and after["mtime_ns"] == before["mtime_ns"]
+    except OSError:
+        rec["original_unchanged"] = False
+    if rec["original_unchanged"] is False:
+        halt = True
+        if rec["status"] == "ok":  # 万一でも ok のまま残さない
+            rec["status"] = "review"
+            rec["reasons"] = [{"code": "X_ORIGINAL_CHANGED", "stage": "S8", "metric": "sha256_mtime", "value": False,
+                               "threshold": True}]
+    return _finish(rec, out_dir, pp, cands, ctx, t0), halt
+
+
+def _write_review(rec, pp, img, cands, ctx, reasons, proposal=None, cfg=None):
+    try:
+        vis = draw_review(img, cands, ctx, reasons, proposal)
+        pp["review"].parent.mkdir(parents=True, exist_ok=True)
+        pp["review"].write_bytes(imgio.encode_jpeg(vis, int(cfg.output.preview_jpeg_quality) if cfg else 90))
+        rec["outputs"]["review"] = str(pp["review"].resolve())
+    except Exception as e:  # review 画像が書けなくても判定は review のまま
+        rec["reasons"].append({"code": "X_REVIEW_IMAGE_FAILED", "stage": "S9", "metric": type(e).__name__,
+                               "value": str(e)[:200], "threshold": None})
+
+
+def _finish(rec, out_dir, pp, cands, ctx, t0):
+    rec["nondeterministic"]["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
+    if rec.get("_no_write"):
+        rec.pop("_no_write")
+        return rec
+    pp = pp or _out_paths(out_dir, rec["job_id"])
+    pp["log"].parent.mkdir(parents=True, exist_ok=True)
+    if pp["log"].exists():  # 念のため。上書きしない
+        rec["status"], rec["reasons"] = "error", [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "log",
+                                                   "value": True, "threshold": False}]
+        return rec
+    geom = rec.pop("geometry", None)
+    rec = json.loads(json.dumps(clean(rec, 8), ensure_ascii=False))
+    rec["geometry"] = sig12(geom) if geom is not None else None
+    pp["log"].write_text(json.dumps(rec, ensure_ascii=False, indent=2, sort_keys=False), encoding="utf-8")
+    return rec

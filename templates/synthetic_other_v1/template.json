@@ -1,0 +1,11 @@
+{
+  "id": "synthetic_other_v1",
+  "kind": "negative",
+  "label": "other",
+  "synthetic": true,
+  "size": [
+    1011,
+    638
+  ],
+  "note": "別様式の合成レイアウト（一致したら O_UNSUPPORTED_CARD）"
+}
