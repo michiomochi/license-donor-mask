@@ -251,9 +251,6 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         rec["input"].update(info)
         long_edge = max(img.shape[:2])
         _add(rec, "S0", {"long_edge_px": long_edge})
-        if long_edge < cfg.input.min_long_edge_px:
-            _fail("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
-                          "threshold": cfg.input.min_long_edge_px}])
         # S1
         res = _run("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"]
@@ -297,9 +294,9 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         e = edge_lengths(quad)
         card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
         met, rs = _run("S5", s5_quality, aligned, tmpl, card_long, cfg)
-        if card_long < cfg.input.min_long_edge_px:
+        if card_long < cfg.input.min_card_long_edge_px:
             rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
-                        "threshold": cfg.input.min_long_edge_px}]
+                        "threshold": cfg.input.min_card_long_edge_px}]
         _add(rec, "S5", met)
         if rs:
             _fail("S5", rs)
@@ -556,9 +553,6 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         rec["input"].update(info)
         long_edge = max(img.shape[:2])
         _add(rec, "S0", {"long_edge_px": long_edge})
-        if long_edge < cfg.input.min_long_edge_px:
-            note("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
-                         "threshold": cfg.input.min_long_edge_px}])
         # S1
         res = call("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"] if res else []
@@ -616,9 +610,9 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         r5 = call("S5", s5_quality, aligned, tmpl, card_long, cfg)
         if r5:
             met, rs = r5
-            if card_long < cfg.input.min_long_edge_px:
+            if card_long < cfg.input.min_card_long_edge_px:
                 rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
-                            "threshold": cfg.input.min_long_edge_px}]
+                            "threshold": cfg.input.min_card_long_edge_px}]
             _add(rec, "S5", met)
             if rs:
                 note("S5", rs)

@@ -39,7 +39,7 @@ def test_real_sample_diagnostic_run_reaches_card_detection(cfg, tmpls, tmp_path,
     if not p.exists():
         pytest.skip(f"{p} がありません")
     t, ts = tmpls
-    diag = cfg.override("input", min_long_edge_px=200)
+    diag = cfg.override("input", min_card_long_edge_px=200)
     rec, _ = pipeline.process_file(p, tmp_path / "out", diag, t, ts)
     print(name, rec["status"], [(r["code"], r["metric"], r["value"]) for r in rec["reasons"]])
     assert rec["status"] == "review" and ok_files(tmp_path / "out") == []

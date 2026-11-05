@@ -55,7 +55,7 @@ class Config(Section):
 
 # 必須キー（欠けていたら起動時に ConfigError）。値の型は数値/配列のみ許す。
 _REQUIRED = {
-    "input": ["max_pixels", "min_long_edge_px"],
+    "input": ["max_pixels", "min_card_long_edge_px"],
     "canvas": ["width", "height", "card_aspect"],
     "card": ["work_long_edge", "canny_low", "canny_high", "canny_dilate", "approx_eps", "min_area_ratio",
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
