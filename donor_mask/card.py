@@ -8,6 +8,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from . import orient
 from .geom import (edge_lengths, interior_angles, order_quad, quad_area, quad_aspect, quad_diag, quad_dist)
 
 MAP_ORDER = ("canny", "otsu", "otsu_inv")
@@ -71,13 +72,12 @@ def edge_support(quad, dist_to_edge, tol: float) -> float:
     return float(np.mean(vals)) if vals else 0.0
 
 
-def is_frame_filled(quad, shape, cfg) -> bool:
-    """カードが枠いっぱい（画像全体の輪郭が唯一の四角形）か。
+def is_frame_outline(quad, shape, cfg) -> bool:
+    """外枠ゲート: 画像全体の輪郭がカード比の四角形か（C_FRAME_FILLED の前置き。これだけでは判定しない）。
 
     4角が画像の4隅から frame_filled_corner_px 以内にあり、見かけのアスペクトが
-    カード比 1.585 ± frame_filled_aspect_tol のときだけ True。面積比では判定できない
-    （枠いっぱいのカードは area_ratio = 1.0 で C_AREA に落ち、原因が「カードが無い」と
-    区別できないため、再撮影を案内する専用の理由コードを与える）。
+    カード比 1.585 ± frame_filled_aspect_tol のときだけ True。アスペクトだけではどの写真の
+    外枠にも当たるので、カードが枠いっぱいかどうかは is_frame_filled の罫線照合で決める。
     """
     c = cfg.card
     h, w = shape[:2]
@@ -88,6 +88,31 @@ def is_frame_filled(quad, shape, cfg) -> bool:
         return False
     asp = quad_aspect(q)
     return abs(asp - cfg.canvas.card_aspect) <= cfg.canvas.card_aspect * float(c.frame_filled_aspect_tol)
+
+
+def is_frame_filled(img, templates, cfg) -> dict:
+    """カードが枠いっぱいか: 画像全体を1枚のカードとみなした罫線照合（orient.frame_match）に status を付けて返す。
+
+    status は "filled" | "not_filled" | "no_templates"。判定は理由コードとログにしか使わず、候補には足さない。
+    """
+    if not templates:
+        return {"status": "no_templates"}
+    m = orient.frame_match(img, templates, cfg)
+    return dict(m, status="filled" if m["filled"] else "not_filled")
+
+
+# 一次理由の優先順。撮り方で直せる「カード外形そのもの」の失敗を先にし、内部の区画や画像の縁から出やすい
+# コード（C_ASPECT・C_AREA）を後にする。C_NOT_QUAD と表外のコードは対象外。
+REJECT_PRIORITY = ("C_TOUCHES_BORDER", "C_FRAME_FILLED", "C_PERSPECTIVE", "C_ANGLE", "C_EDGE_SUPPORT",
+                   "C_NO_CONSENSUS", "C_ASPECT", "C_AREA", "C_FRAME_UNVERIFIED")
+
+
+def primary_rejection(rejected: dict) -> str | None:
+    """rejected のうち REJECT_PRIORITY の順で最初に含まれるコード（件数は見ない）。無ければ None。"""
+    for code in REJECT_PRIORITY:
+        if rejected.get(code):
+            return code
+    return None
 
 
 def geometry_check(quad, shape, dist_to_edge, cfg):
@@ -125,8 +150,13 @@ def geometry_check(quad, shape, dist_to_edge, cfg):
     return None, m
 
 
-def find_candidates(img, cfg) -> dict:
-    """{"candidates":[{"quad":(4,2) 元画像座標・時計回り, "maps":[...], "metrics":{...}}], "rejected":{code:n}, ...}"""
+def find_candidates(img, cfg, templates) -> dict:
+    """{"candidates":[{"quad":(4,2) 元画像座標・時計回り, "maps":[...], "metrics":{...}}], "rejected":{code:n},
+    "frame_filled": {...}, ...}
+
+    templates は必須（既定値なし）。枠いっぱいの判定に使う。None は「照合しない」と明示する値で、
+    外枠ゲートに当たって候補が0件なら C_FRAME_UNVERIFIED になる（黙って無判定にしない）。
+    """
     c = cfg.card
     H, W = img.shape[:2]
     s = min(1.0, c.work_long_edge / max(H, W))
@@ -145,7 +175,7 @@ def find_candidates(img, cfg) -> dict:
     def rej(code):
         rejected[code] = rejected.get(code, 0) + 1
 
-    frame_filled_seen = False
+    n_outline = 0
     for name, mp in maps:
         cnts, _ = cv2.findContours(mp, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         for cn in cnts:
@@ -166,10 +196,10 @@ def find_candidates(img, cfg) -> dict:
             band = c.corner_refine_band * quad_diag(quad)
             quad, _refined = refine_corners(quad, boundary_points(cn, hull), band, int(c.corner_refine_min_points))
             quad = order_quad(quad)
-            if is_frame_filled(quad, small.shape, cfg):
-                # 画像全体の輪郭。ここでは落とさず印だけ付け、候補が1つも取れなかったときに理由コードにする
-                # （正常にカードが取れている写真で「カードが枠いっぱい」と誤って言わないため）
-                frame_filled_seen = True
+            if is_frame_outline(quad, small.shape, cfg):
+                # 画像全体の輪郭。候補にも幾何判定にも回さず数だけ数える。候補が1つも取れなかったときだけ、
+                # 下で罫線照合して C_FRAME_FILLED にするか決める（アスペクトだけでは判定しない）
+                n_outline += 1
                 continue
             code, met = geometry_check(quad, small.shape, dist_to_edge, cfg)
             if code:
@@ -202,6 +232,16 @@ def find_candidates(img, cfg) -> dict:
         met["maps"] = names
         cands.append({"quad": quad, "maps": names, "metrics": met})
     cands.sort(key=lambda d: (round(float(d["quad"][:, 1].mean()), 0), round(float(d["quad"][:, 0].mean()), 0)))
-    if not cands and frame_filled_seen:
-        rej("C_FRAME_FILLED")  # 「カードが枠いっぱい」＝再撮影（余白を残す）を案内する。フォールバックはしない
-    return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed)}
+    if n_outline == 0:
+        frame = {"status": "no_outline"}
+    elif cands:
+        frame = {"status": "has_candidates", "n_outline": n_outline}  # 候補があれば照合しない（コストを使わない）
+    else:
+        frame = dict(is_frame_filled(img, templates, cfg), n_outline=n_outline)
+        if frame["status"] == "filled":
+            rej("C_FRAME_FILLED")  # 「カードが枠いっぱい」＝再撮影（余白を残す）を案内する。フォールバックはしない
+        elif frame["status"] == "no_templates":
+            rej("C_FRAME_UNVERIFIED")  # 照合できなかった。黙って True にも False にもしない
+        # not_filled: 外枠は画像の縁でカードではない。コードは付けず、根拠は frame に残る
+    return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed),
+            "frame_filled": frame}

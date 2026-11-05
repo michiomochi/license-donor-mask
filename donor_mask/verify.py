@@ -120,7 +120,9 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     logged = np.asarray(geom["card_quad"], np.float64)
     # 黒塗りで Otsu の閾値が変わり、マスクがカード縁に近いと縁のエッジも弱まる。再検出は 1 マップ合意・縁の支持率 0.5 で緩め、
     # 代わりに「ログの四角との角の一致 1%」を厳密に見る（カード幾何が壊れていないことの確認が目的）
-    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5))["candidates"]
+    # templates=None: V4 が使うのは candidates だけ。枠いっぱいの照合（C_FRAME_FILLED の判定）は不要なので明示的に省く
+    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5),
+                                    None)["candidates"]
     dmin = min((quad_dist(logged, c["quad"]) for c in found), default=1e9)
     res["card"] = {"n_candidates": len(found), "min_corner_dist_px": dmin,
                    "limit_px": v.card_corner_dist_ratio * quad_diag(logged)}

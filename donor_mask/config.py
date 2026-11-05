@@ -61,7 +61,8 @@ _REQUIRED = {
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
              "edge_support_min", "edge_support_tol_px", "border_margin_ratio", "border_margin_px",
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",
-             "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px"],
+             "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px", "frame_filled_zncc_min",
+             "frame_filled_inset_scales"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
     "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3"],
     "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
@@ -112,7 +113,28 @@ def load_config(path=None) -> Config:
                 raise ConfigError(f"設定値が数値ではありません: [{sec}] {k} = {v!r}")
     _validate_mirror_gate(raw)
     _validate_ink_gate(raw)
+    _validate_frame_gate(raw)
     return Config(raw, hashlib.sha256(data).hexdigest(), str(p))
+
+
+def _validate_frame_gate(raw: dict):
+    """C_FRAME_FILLED の照合条件。範囲外の値は「常に枠いっぱい／常に違う」になる設定なので起動時に落とす。
+
+    - frame_filled_zncc_min: (0, 1)
+    - frame_filled_inset_scales: 空でない list。各要素は 0.5 < s < 1.0 の数で、厳密に降順（評価順を固定する）
+    """
+    c = raw["card"]
+    z = c["frame_filled_zncc_min"]
+    if isinstance(z, (list, bool)) or not (0.0 < float(z) < 1.0):
+        raise ConfigError(f"[card] frame_filled_zncc_min は (0, 1): {z!r}")
+    sc = c["frame_filled_inset_scales"]
+    if not isinstance(sc, list) or not sc:
+        raise ConfigError(f"[card] frame_filled_inset_scales は空でない配列: {sc!r}")
+    for s in sc:
+        if isinstance(s, (bool, list)) or not isinstance(s, (int, float)) or not (0.5 < float(s) < 1.0):
+            raise ConfigError(f"[card] frame_filled_inset_scales の各要素は 0.5 < s < 1.0 の数: {sc!r}")
+    if any(float(a) <= float(b) for a, b in zip(sc, sc[1:])):
+        raise ConfigError(f"[card] frame_filled_inset_scales は厳密な降順（評価順を固定する）: {sc!r}")
 
 
 def _validate_ink_gate(raw: dict):

@@ -31,8 +31,10 @@ consensus_dist_ratio = 0.01    # 対角線長に対する比
 corner_refine_band = 0.015     # 対角線長に対する比（辺近傍帯）
 corner_refine_min_points = 30
 max_candidates = 12            # 超えたら C_TOO_MANY_CANDIDATES
-frame_filled_aspect_tol = 0.05 # C_FRAME_FILLED: 画像全面の輪郭をカードとみなさない（アスペクト 1.585±5%）
-frame_filled_corner_px = 4.0   # C_FRAME_FILLED: 4角が画像の隅からこの距離以内なら「カードが枠いっぱい」
+frame_filled_aspect_tol = 0.05 # C_FRAME_FILLED の前置き: 画像全体の輪郭がカード比 1.585±5% のときだけ照合する
+frame_filled_corner_px = 4.0   # C_FRAME_FILLED の前置き: 4角が画像の隅からこの距離以内なら外枠とみなす
+frame_filled_zncc_min = 0.40   # C_FRAME_FILLED: 画像全体を1枚のカードとみなした最大 ZNCC（全テンプレート・8仮説）の下限。実測: 枠いっぱいのカード（切り出し c1〜c3）0.782/0.531/0.515、実写真 img_838 0.109（3枚の最大は 0.308）
+frame_filled_inset_scales = [0.97, 0.94, 0.91, 0.88]  # C_FRAME_FILLED: 同じ仮説で枠を中心へ縮めた ZNCC がどれも全体の枠より低いこと（余白付きカードの誤判定を防ぐ。余白3%の合成カード: 全体 0.582 < 縮めた枠 0.652）
 
 [signature]                    # S2 レイアウト署名
 block_size = 31

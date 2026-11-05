@@ -133,7 +133,7 @@ def cmd_rectify(a) -> int:
         pg = out / f"{job}__orig_grid.jpg"
         pg.write_bytes(imgio.encode_jpeg(draw_grid(img), 90))
         print(f"[grid] 元画像のグリッド: {pg}")
-        cands = card.find_candidates(img, cfg)
+        cands = card.find_candidates(img, cfg, templates)
         print(f"[rectify] {f.name}: card candidates={len(cands['candidates'])} rejected={cands['rejected']}")
         for i, c in enumerate(cands["candidates"]):
             hyps = [h for h in orient.score_hypotheses(img, [c], templates, cfg) if not h["mirror"] and h["kind"] == "positive"]

@@ -34,6 +34,39 @@ def _rank(h):
     return (-h["zncc"], h["cand"], h["mirror"], h["rot"], h["template"])
 
 
+def score_quad(img, quad, template, cfg) -> float:
+    """向き付きの1つの四角を1つのテンプレートで照合した ZNCC（score_hypotheses の内側ループ1回分）。"""
+    norm, _ = normalize(img, quad, cfg)
+    rul = layout.ruling_map(norm, cfg)
+    return layout.zncc(layout.signature(rul, template.ignore_rects, cfg), template.sig)
+
+
+def frame_match(img, templates, cfg) -> dict:
+    """画像全体を1枚のカードとみなした罫線照合（C_FRAME_FILLED の判定。判定自体は card.is_frame_filled）。
+
+    四角は元画像のフル解像度の四隅に固定（精密化の結果に依存させない）。全テンプレート×8仮説の最大 ZNCC が
+    frame_filled_zncc_min 以上で、かつ同じ仮説で枠を中心へ縮めた照合値（frame_filled_inset_scales）のどれよりも
+    高いときだけ filled。枠いっぱいなら縮めると罫線がずれて下がり、余白付きカードなら縮めるほうが外形に合って上がる。
+    """
+    H, W = img.shape[:2]
+    q = np.array([[0.0, 0.0], [W - 1.0, 0.0], [W - 1.0, H - 1.0], [0.0, H - 1.0]])
+    hyps = score_hypotheses(img, [{"quad": q}], templates, cfg)
+    best = min(hyps, key=_rank)
+    tmpl = next(t for t in templates if t.id == best["template"])
+    idx = best["rot"] // 90 + (4 if best["mirror"] else 0)
+    c = q.mean(axis=0)
+    scales = [float(s) for s in cfg.card.frame_filled_inset_scales]
+    insets = []
+    for s in scales:
+        hq = hypothesis_quads(c + s * (q - c))[idx][2]
+        insets.append(score_quad(img, hq, tmpl, cfg))
+    zmin = float(cfg.card.frame_filled_zncc_min)
+    inset_max = max(insets)
+    return {"zncc": best["zncc"], "template": best["template"], "rot": best["rot"], "mirror": best["mirror"],
+            "inset_scales": scales, "inset_zncc": insets, "inset_max": inset_max, "zncc_min": zmin,
+            "filled": bool(best["zncc"] >= zmin and best["zncc"] > inset_max)}
+
+
 def _hyp_quad(candidates, h):
     """仮説の四角（向き付き）。hypothesis_quads の並びは rot/90 + mirror*4。"""
     return hypothesis_quads(candidates[h["cand"]]["quad"])[h["rot"] // 90 + (4 if h["mirror"] else 0)][2]

@@ -11,9 +11,9 @@ import pytest
 from conftest import ROOT, reason_codes, run_fixture
 
 import fixtures_gen as fx
-from donor_mask import build, cli, pipeline
+from donor_mask import build, card, cli, pipeline
 from donor_mask.card import find_candidates
-from donor_mask.config import ConfigError
+from donor_mask.config import ConfigError, load_config
 from donor_mask.geom import rect_area
 from donor_mask.mask import base_pads, padded
 from donor_mask.template import load_templates
@@ -152,50 +152,200 @@ def test_cli_template_build_refuses_too_few_without_flag(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------- C_FRAME_FILLED
-@pytest.fixture(scope="module")
-def frame_filled_fixture():
-    """カードが画像いっぱい（余白 0）。画像全体の輪郭だけが唯一の四角形になる。"""
-    img = blank_norm()
+def as_fixture(img) -> fx.Fixture:
     ok, buf = cv2.imencode(".png", img)
     assert ok
     return fx.Fixture(img, buf.tobytes(), ".png", None, None)
 
 
+def card_crop(f, size=(fx.NW, fx.NH)):
+    """トリミング済みカード（余白ゼロで切り出した写真）の合成版。角丸の外側に背景が少し写り、JPEG の劣化も入る。"""
+    W, H = size
+    M = cv2.getPerspectiveTransform(f.quad.astype(np.float32), np.float32([[0, 0], [W, 0], [W, H], [0, H]]))
+    return cv2.warpPerspective(f.img, M, (W, H), flags=cv2.INTER_LINEAR)
+
+
+@pytest.fixture(scope="module")
+def frame_filled_fixture():
+    """カードが画像いっぱい（余白 0）。画像全体の輪郭だけが唯一の四角形になる。"""
+    return as_fixture(blank_norm())
+
+
 def test_frame_filled_card_is_rejected_with_code(cfg, tmpls, tmp_path, frame_filled_fixture):
-    cands = find_candidates(frame_filled_fixture.img, cfg)
-    assert cands["candidates"] == [] and cands["rejected"].get("C_FRAME_FILLED", 0) >= 1
-    assert "C_AREA" not in cands["rejected"]  # 「面積が大きすぎる」ではなく専用コードで落とす
+    res = find_candidates(frame_filled_fixture.img, cfg, tmpls[0])
+    assert res["candidates"] == [] and res["rejected"].get("C_FRAME_FILLED", 0) >= 1
+    assert "C_AREA" not in res["rejected"]  # 「面積が大きすぎる」ではなく専用コードで落とす
+    ff = res["frame_filled"]
+    assert ff["status"] == "filled"
+    assert ff["zncc"] >= cfg.card.frame_filled_zncc_min
+    assert ff["zncc"] > ff["inset_max"]
     rec, out, _ = run_fixture(tmp_path, frame_filled_fixture, cfg, tmpls)
     assert rec["status"] == "review"
     assert "C_FRAME_FILLED" in reason_codes(rec)
+    assert rec["primary_reason"] == "C_FRAME_FILLED"
     assert not (out / "ok" / f"{rec['job_id']}__masked.png").exists()
 
 
-def test_square_frame_is_not_frame_filled(cfg):
+def test_square_frame_is_not_frame_filled(cfg, tmpls):
     """アスペクトが 1.585±5% から外れる全面の四角形は C_FRAME_FILLED にしない（正方形の写真など）。"""
     img = np.full((1200, 1200, 3), 235, np.uint8)
     cv2.rectangle(img, (0, 0), (1199, 1199), (30, 30, 30), 3)
-    res = find_candidates(img, cfg)
+    res = find_candidates(img, cfg, tmpls[0])
     assert res["candidates"] == []
     assert "C_FRAME_FILLED" not in res["rejected"] and res["rejected"].get("C_AREA", 0) >= 1
 
 
-def test_normal_card_is_not_frame_filled(cfg):
+def test_normal_card_is_not_frame_filled(cfg, tmpls):
     """通常の余白のある写真は C_FRAME_FILLED にならない（誤爆しない）。"""
-    res = find_candidates(fx.make({"seed": 1}).img, cfg)
+    res = find_candidates(fx.make({"seed": 1}).img, cfg, tmpls[0])
     assert "C_FRAME_FILLED" not in res["rejected"] and len(res["candidates"]) >= 1
+    assert res["frame_filled"]["status"] in ("no_outline", "has_candidates")
+
+
+def test_frame_match_tie_is_not_filled(cfg, tmpls, monkeypatch):
+    """縮めた枠の照合が全体の枠と同じ値（同点）なら filled にしない。"""
+    from donor_mask import orient
+
+    img = blank_norm()
+    base = orient.frame_match(img, tmpls[0], cfg)
+    assert base["filled"] is True  # 前提: 同点でなければ filled
+    monkeypatch.setattr(orient, "score_quad", lambda *a, **k: base["zncc"])
+    m = orient.frame_match(img, tmpls[0], cfg)
+    assert m["zncc"] == m["inset_max"] and m["filled"] is False
 
 
 def test_pipeline_keeps_frame_filled_out_of_ok():
     """C_FRAME_FILLED は ok 経路を開かない（条件付きフォールバックを入れていない）。"""
     import inspect
 
-    from donor_mask import card
     src = inspect.getsource(card.find_candidates)
     assert "C_FRAME_FILLED" in src and "is_frame_filled" in inspect.getsource(card)
-    # pipeline 側に「枠いっぱいなら全体をカードとみなす」経路が無いこと
+    assert "is_frame_filled" in src
+    # pipeline 側に「枠いっぱいなら全体をカードとみなす」経路が無いこと。判定は card にしか無い
     psrc = inspect.getsource(pipeline.process_file)
     assert "FRAME_FILLED" not in psrc and "frame_filled" not in psrc
+    allsrc = inspect.getsource(pipeline)
+    assert "is_frame_filled" not in allsrc and "frame_match" not in allsrc
+
+
+@pytest.mark.parametrize("wh", [(1104, 700), (1200, 757)])
+def test_unrelated_card_aspect_photo_is_not_frame_filled(cfg, tmpls, tmp_path, wh):
+    """書類もカードも無い、カード比に近い写真（机・カップ・鉛筆）。アスペクトだけで C_FRAME_FILLED にしない。"""
+    W, H = wh
+    bg = fx.background("plain", W, H, 0)
+    cv2.ellipse(bg, (int(W * .3), int(H * .4)), (int(W * .12), int(H * .15)), 0, 0, 360, (60, 60, 140), -1,
+                cv2.LINE_AA)
+    cv2.line(bg, (int(W * .55), int(H * .2)), (int(W * .9), int(H * .75)), (30, 30, 30), 6, cv2.LINE_AA)
+    res = find_candidates(bg, cfg, tmpls[0])
+    assert res["candidates"] == []
+    assert "C_FRAME_FILLED" not in res["rejected"]
+    assert res["frame_filled"]["status"] == "not_filled"
+    assert res["frame_filled"]["zncc"] < cfg.card.frame_filled_zncc_min
+    rec, _out, _ = run_fixture(tmp_path, as_fixture(bg), cfg, tmpls)
+    assert rec["status"] == "review"
+    assert reason_codes(rec) == ["C_NO_CARD"]
+    assert rec["primary_reason"] == "C_NO_CARD"
+
+
+@pytest.mark.parametrize("case,size", [({"seed": 1, "angle": 3}, (1011, 638)),
+                                       ({"seed": 2, "angle": -5, "persp": 0.03}, (1200, 757))])
+def test_trimmed_card_crop_is_frame_filled(cfg, tmpls, tmp_path, case, size):
+    """真陽性を落とさない: 余白ゼロでトリミングしたカードは C_FRAME_FILLED（再撮影を案内）。"""
+    img = card_crop(fx.make(case), size)
+    res = find_candidates(img, cfg, tmpls[0])
+    assert res["candidates"] == []
+    assert res["rejected"]["C_FRAME_FILLED"] == 1
+    ff = res["frame_filled"]
+    assert ff["status"] == "filled" and ff["template"] == "synthetic_back_v1"
+    assert ff["rot"] == 0 and ff["mirror"] is False
+    rec, out, _ = run_fixture(tmp_path, as_fixture(img), cfg, tmpls)
+    assert "C_FRAME_FILLED" in reason_codes(rec)
+    assert rec["primary_reason"] == "C_FRAME_FILLED"
+    assert not (out / "ok").exists() or list((out / "ok").glob("*")) == []
+
+
+def test_small_card_in_card_aspect_photo_reports_its_own_reason(cfg, tmpls, tmp_path):
+    """カード比の写真に小さなカードが写っている（面積比 < 0.15）。外枠は画像の縁で、理由は C_AREA。"""
+    f = fx.make({"seed": 11, "scale": 0.40})
+    res = find_candidates(f.img, cfg, tmpls[0])
+    assert "C_FRAME_FILLED" not in res["rejected"]
+    assert res["rejected"].get("C_AREA", 0) >= 1
+    assert res["frame_filled"]["status"] == "not_filled"
+    rec, _out, _ = run_fixture(tmp_path, f, cfg, tmpls)
+    assert reason_codes(rec) == ["C_NO_CARD", "C_AREA"]
+    assert rec["primary_reason"] == "C_AREA"
+
+
+def test_inset_condition_rejects_card_with_small_margin(cfg, tmpls):
+    """ZNCC だけなら通る（余白 3% のカードでも画像全体が罫線に 0.58 で合う）が、縮めた枠のほうが高いので filled にしない。"""
+    m = card.is_frame_filled(fx.make({"seed": 1}).img, tmpls[0], cfg)
+    assert m["zncc"] >= cfg.card.frame_filled_zncc_min
+    assert m["inset_max"] > m["zncc"]
+    assert m["status"] == "not_filled"
+
+
+def test_find_candidates_requires_explicit_templates(cfg):
+    """templates は必須引数。None は「照合しない」＝C_FRAME_UNVERIFIED（黙って旧挙動や無判定にしない）。"""
+    with pytest.raises(TypeError):
+        find_candidates(blank_norm(), cfg)
+    res = find_candidates(blank_norm(), cfg, None)
+    assert res["rejected"].get("C_FRAME_UNVERIFIED") == 1
+    assert "C_FRAME_FILLED" not in res["rejected"]
+    assert res["frame_filled"]["status"] == "no_templates"
+
+
+def test_primary_reason_order():
+    assert card.primary_rejection({"C_ASPECT": 6, "C_FRAME_FILLED": 1}) == "C_FRAME_FILLED"
+    assert card.primary_rejection({"C_ANGLE": 3, "C_NOT_QUAD": 2}) == "C_ANGLE"
+    assert card.primary_rejection({"C_TOUCHES_BORDER": 1, "C_FRAME_FILLED": 1, "C_ASPECT": 10}) == "C_TOUCHES_BORDER"
+    assert card.primary_rejection({}) is None
+    assert card.primary_rejection({"C_NOT_QUAD": 2}) is None
+    assert pipeline.primary_reason([]) is None
+    rs = [{"code": "Q_BLUR", "stage": "S5", "metric": "x", "value": 1, "threshold": 2},
+          {"code": "F_FRAME_NOT_FOUND", "stage": "S6", "metric": "y", "value": 0, "threshold": 1}]
+    assert pipeline.primary_reason(rs) == "Q_BLUR"
+    no_card = [{"code": "C_NO_CARD", "stage": "S1", "metric": "candidates", "value": 0, "threshold": 1}]
+    assert pipeline.primary_reason(no_card) == "C_NO_CARD"
+    no_card += [{"code": c, "stage": "S1", "metric": "rejected_candidates", "value": n, "threshold": 0}
+                for c, n in (("C_ASPECT", 6), ("C_FRAME_FILLED", 1))]
+    assert pipeline.primary_reason(no_card) == "C_FRAME_FILLED"
+
+
+def test_ok_record_has_null_primary_reason(cfg, tmpls, tmp_path):
+    rec, _out, _ = run_fixture(tmp_path, fx.make({"seed": 1}), cfg, tmpls)
+    assert rec["status"] == "ok" and rec["primary_reason"] is None
+    keys = list(rec)
+    assert keys.index("primary_reason") == keys.index("reasons") + 1
+
+
+def test_diagnostic_s1_log_matches_run(cfg, tmpls, tmp_path, frame_filled_fixture):
+    """run と diagnostic の S1 ログは同じ（frame_filled を含む）。"""
+    rec, _out, p = run_fixture(tmp_path, frame_filled_fixture, cfg, tmpls)
+    drec, _ = pipeline.diagnose_file(p, tmp_path / "diag", cfg, *tmpls)
+    assert drec["stages"]["S1"] == rec["stages"]["S1"]
+    assert drec["stages"]["S1"]["frame_filled"]["status"] == "filled"
+    assert drec["primary_reason"] == "C_FRAME_FILLED"
+
+
+_SC = "frame_filled_inset_scales = [0.97, 0.94, 0.91, 0.88]"
+
+
+@pytest.mark.parametrize("old,new", [
+    ("frame_filled_zncc_min = 0.40", "frame_filled_zncc_min = 0"),
+    ("frame_filled_zncc_min = 0.40", "frame_filled_zncc_min = 1.0"),
+    (_SC, "frame_filled_inset_scales = []"),
+    (_SC, "frame_filled_inset_scales = [1.0]"),
+    (_SC, "frame_filled_inset_scales = [0.4]"),
+    (_SC, "frame_filled_inset_scales = [0.88, 0.97]"),
+    (_SC, "frame_filled_inset_scales = [0.97, 0.97]"),
+])
+def test_frame_gate_config_is_validated(tmp_path, old, new):
+    src = (ROOT / "config.toml").read_text(encoding="utf-8")
+    assert old in src
+    p = tmp_path / "bad.toml"
+    p.write_text(src.replace(old, new, 1), encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(p)
 
 
 F_RULES_SPEC = {

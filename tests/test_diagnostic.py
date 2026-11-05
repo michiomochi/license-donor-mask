@@ -182,6 +182,7 @@ def test_diagnostic_does_not_overwrite_an_existing_log(cfg, tmpls, tmp_path):
     before = (out / "logs" / f"{r1['job_id']}.json").read_bytes()
     r2, _ = pipeline.diagnose_file(p, out, cfg, templates, tsha)
     assert r2["status"] == "error" and reason_codes(r2) == ["X_OUTPUT_EXISTS"]
+    assert r2["primary_reason"] == "X_OUTPUT_EXISTS"
     assert (out / "logs" / f"{r1['job_id']}.json").read_bytes() == before
 
 

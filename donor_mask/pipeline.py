@@ -48,8 +48,30 @@ def s0_load(path, cfg):
     return imgio.read_original(Path(path), int(cfg.input.max_pixels))
 
 
-def s1_candidates(img, cfg):
-    return card.find_candidates(img, cfg)
+def s1_candidates(img, cfg, templates):
+    return card.find_candidates(img, cfg, templates)
+
+
+def s1_log(res) -> dict:
+    """S1 のログ。process_file と diagnose_file で同一にする（判定そのものは card にしか無い）。"""
+    return {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in res["candidates"]],
+            "rejected": res["rejected"], "frame_filled": res["frame_filled"]}
+
+
+def primary_reason(reasons: list) -> str | None:
+    """reasons から一次理由を1つ選ぶ（reasons の中身・並びは変えない）。
+
+    - 空 → None
+    - 先頭が C_NO_CARD（S1 で候補0件）→ S1 の棄却コードを card.REJECT_PRIORITY の順に見て最初のもの。無ければ C_NO_CARD
+    - それ以外 → 先頭の理由（失敗した段の最初の理由。diagnostic では最も早い段の理由）
+    """
+    if not reasons:
+        return None
+    if reasons[0]["code"] == "C_NO_CARD":
+        rejected = {r["code"]: r["value"] for r in reasons
+                    if r.get("stage") == "S1" and r.get("metric") == "rejected_candidates"}
+        return card.primary_rejection(rejected) or "C_NO_CARD"
+    return reasons[0]["code"]
 
 
 def s2_score(img, cands, templates, cfg):
@@ -116,7 +138,7 @@ def new_rec(path, cfg, tmpl_sha, mode="run"):
         "versions": {"tool": __version__, "python": platform.python_version(), "opencv": cv2.__version__,
                      "numpy": np.__version__},
         "config_sha256": cfg.sha256, "templates_sha256": tmpl_sha,
-        "status": None, "reasons": [], "stages": {}, "geometry": None,
+        "status": None, "reasons": [], "primary_reason": None, "stages": {}, "geometry": None,
         "outputs": {"masked": None, "masked_sha256": None, "preview": None, "review": None},
         "original_unchanged": None,
         "nondeterministic": {"started_at": None, "elapsed_ms": None},
@@ -168,6 +190,10 @@ def draw_review(img, cands, ctx, reasons, proposal=None):
     for r in reasons:
         if r["code"] not in codes:
             codes.append(r["code"])
+    prim = primary_reason(reasons)
+    if prim in codes:  # 一次理由を先頭に（切り詰められても案内が残る）。残りは出現順
+        codes.remove(prim)
+        codes.insert(0, prim)
     _label(vis, ["REVIEW (not masked): " + " ".join(codes[:6])], (0, 255, 255))
     return vis
 
@@ -210,6 +236,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         rec["reasons"] = [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "exists", "value": True,
                            "threshold": False}]
         rec["_no_write"] = True
+        rec["primary_reason"] = primary_reason(rec["reasons"])
         return rec, False
 
     try:
@@ -228,10 +255,9 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             _fail("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
                           "threshold": cfg.input.min_long_edge_px}])
         # S1
-        res = _run("S1", s1_candidates, img, cfg)
+        res = _run("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"]
-        _add(rec, "S1", {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in cands],
-                         "rejected": res["rejected"]})
+        _add(rec, "S1", s1_log(res))
         if not cands:
             rs = [{"code": "C_NO_CARD", "metric": "candidates", "value": 0, "threshold": 1}]
             for code, n in sorted(res["rejected"].items()):
@@ -428,6 +454,8 @@ def _abort_ok(pp, rec, placed):
 
 
 def _finish(rec, out_dir, pp, cands, ctx, t0):
+    # run・diagnostic・error の経路はここを通る（X_OUTPUT_EXISTS の早期 return は同じ式を直接入れている）。ok なら None
+    rec["primary_reason"] = None if rec["status"] == "ok" else primary_reason(rec["reasons"])
     rec["nondeterministic"]["elapsed_ms"] = int((time.perf_counter() - t0) * 1000)
     if rec.get("_no_write"):
         rec.pop("_no_write")
@@ -437,6 +465,7 @@ def _finish(rec, out_dir, pp, cands, ctx, t0):
     if pp["log"].exists():  # 念のため。上書きしない
         rec["status"], rec["reasons"] = "error", [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "log",
                                                    "value": True, "threshold": False}]
+        rec["primary_reason"] = primary_reason(rec["reasons"])
         return rec
     geom = rec.pop("geometry", None)
     rec = json.loads(json.dumps(clean(rec, 8), ensure_ascii=False))
@@ -509,6 +538,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         rec["reasons"] = [{"code": "X_OUTPUT_EXISTS", "stage": "S9", "metric": "exists", "value": True,
                            "threshold": False}]
         rec["_no_write"] = True
+        rec["primary_reason"] = primary_reason(rec["reasons"])
         return rec, False
 
     got = {}  # S8 に渡すもの: img / tmpl / rect / geom
@@ -530,11 +560,10 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
             note("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
                          "threshold": cfg.input.min_long_edge_px}])
         # S1
-        res = call("S1", s1_candidates, img, cfg)
+        res = call("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"] if res else []
         if res:
-            _add(rec, "S1", {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]}
-                                            for c in cands], "rejected": res["rejected"]})
+            _add(rec, "S1", s1_log(res))
             if not cands:
                 rs = [{"code": "C_NO_CARD", "metric": "candidates", "value": 0, "threshold": 1}]
                 for code, n in sorted(res["rejected"].items()):

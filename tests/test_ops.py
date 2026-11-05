@@ -73,6 +73,7 @@ def test_existing_output_is_not_overwritten(cfg, tmpls, tmp_path):
     t, ts = tmpls
     rec2, _ = pipeline.process_file(p, od, cfg, t, ts)
     assert rec2["status"] == "error" and "X_OUTPUT_EXISTS" in reason_codes(rec2)
+    assert rec2["primary_reason"] == "X_OUTPUT_EXISTS"
     assert masked.read_bytes() == before and (od / "logs" / f"{rec['job_id']}.json").read_bytes() == log_before
 
 
