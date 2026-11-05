@@ -284,9 +284,11 @@ def test_v4_fails_when_the_mask_misses_the_digit_boxes(cfg, synth, tmp_path):
     S7 が保護領域との隙間で余白を縮めたときにマスクが内側へ寄る経路があるので、到達しうる状態。
     """
     t, tmpls = digits_template(cfg, synth)
-    templates = [t if t.id == t.id else x for x in tmpls]
     fixture = fx.make({"seed": 1, "jpeg": None})
-    rec, out, _ = run_fixture(tmp_path, fixture, cfg, (templates, "x"))
+    # 制御ケースは標準テンプレートで回す（digits テンプレートは V4 の判定にだけ使う）。
+    # 合成フィクスチャの数字は synthesized な layout 上のもので、pipeline 全体を
+    # digits テンプレートで通すのはこのテストの目的ではない（それは test_real_template.py 側）。
+    rec, out, _ = run_fixture(tmp_path, fixture, cfg, (tmpls, "x"))
     assert rec["status"] == "ok"
     geom = copy.deepcopy(rec["geometry"])
     x0, y0, x1, y1 = geom["mask_rect"]
