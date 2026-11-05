@@ -45,6 +45,7 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 
 幾何条件（全部 AND。初期値）— 落ちた理由は最初に当たったコード:
 面積比 0.15 以上 0.95 未満（`C_AREA`）→ 内角 70〜110°（`C_ANGLE`）→ 対辺長比 ≤ 1.30（`C_PERSPECTIVE`）→ 4 角が画像端から短辺の 0.5% かつ 3px 以上内側（`C_TOUCHES_BORDER`）→ 見かけのアスペクト 1.585±20%（`C_ASPECT`）→ 辺のエッジ支持率（3px 以内に Canny エッジがある割合）≥ 0.85（`C_EDGE_SUPPORT`）→ 同じ四角形（4 角の距離が対角線長の 1%）が 3 マップ中 2 つ以上で見つかる（`C_NO_CONSENSUS`）。
+**カードが枠いっぱい**（4 角が画像の 4 隅から 4px 以内、かつ見かけのアスペクトが 1.585±5%）の輪郭は、幾何判定に回す前に除外して印を付ける。他の候補が 1 つも取れなかったときだけ理由コード `C_FRAME_FILLED`（＝余白を残して再撮影）にする。**「画像全体をカードとみなして処理する」経路は無い**。画像全体の輪郭はどの写真にも現れる（Otsu 反転マップの外周）ため、正常にカードが取れている写真では付けない。
 通った候補は面積で順位付けせず全部 S2 へ。入れ子（台紙とカード）は両方評価され、台紙は罫線テンプレートと一致しないことで落ちる。候補が 12 個を超えたら `C_TOO_MANY_CANDIDATES`。
 
 ### S2 レイアウト署名と照合
@@ -97,9 +98,9 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 |---|---|
 | `config.toml` | 全しきい値（コードに直書きしない）。欠けたキーは起動時に `ConfigError`（終了コード 1） |
 | `templates/<id>/` | `template.json`（`kind` / `field_rect` / `anchor` / `protected_rects` / `ignore_rects` / `required_cues` / `expected_mask_area` …。座標は正規化 1011×638）、`ruling.png`（罫線マップ）、`print.png`（暗画素マップ） |
-| `donor_mask/` | `imgio`(入出力) `geom` `layout`(罫線マップ・署名・ZNCC) `template` `card`(S1) `orient`(S2〜S4) `quality`(S5) `field`(S6) `ink` `mask`(S7) `verify`(S8) `pipeline`(統括) `cli` |
+| `donor_mask/` | `imgio`(入出力) `geom` `layout`(罫線マップ・署名・ZNCC) `template` `card`(S1) `orient`(S2〜S4) `quality`(S5) `field`(S6) `ink` `mask`(S7) `verify`(S8) `pipeline`(統括) `build`(template-build) `cli` |
 | `tests/fixtures_gen.py` | 合成データ生成器（固定シード。コミットしない画像を毎回再生成） |
-| `tools/build_synthetic_templates.py` | 合成テンプレートの作成（テストが、コミット済みテンプレートとの一致を確認） |
+| `tools/build_synthetic_templates.py` | 合成テンプレートの作成（テストが、コミット済みテンプレートとの一致を確認）。実サンプル用は `donor_mask/build.py`（`template-build`） |
 
 ログ JSON は設計書 5.2 のスキーマ（`schema_version`, `job_id`, `input`, `versions`, `config_sha256`, `templates_sha256`, `status`, `reasons`, `stages`, `outputs`, `original_unchanged`, `nondeterministic`）に、検証用の `geometry` を足したもの。`nondeterministic`（開始時刻・処理時間）以外は、同じ入力・同じ設定なら完全一致する。画素・切り抜き・欄の内容は入れない。
 
@@ -108,7 +109,10 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 しきい値・座標は **初期値**で、実物で決める。設計書 5.4 の手順（C0〜C5）に従う:
 
 - C0 合成フィクスチャだけで幾何を固める（v1 はここまで。初期値のまま全テスト通過）。
-- C1 テンプレート作成: 本人同意済みの社内サンプル、または公的な見本画像（入手経路と利用可否は要確認）を `rectify` で正規化し、5% グリッド付き画像を見て `field_rect`・アンカーの位置と大きさ・`protected_rects`・`ignore_rects` を記入する。様式ごとに 5 枚以上、`field_rect` は全サンプルの和集合、署名は平均。**v1 では `template-build` が未実装なので、`ruling.png` / `print.png` は `tools/build_synthetic_templates.py` と同様に自前のスクリプトで作る**。最初の作業として「実物にチェックボックス3連が本当にあるか（番号を○で囲む方式か）」「欄に枠罫線があるか」を確認し、無ければ `anchor_type` や `required_cues` を変える。
+- C1 テンプレート作成: 本人同意済みの社内サンプル、または公的な見本画像（入手経路と利用可否は要確認）を `rectify` で正規化し、5% グリッド付き画像を見て `field_rect`・アンカーの位置と大きさ・`protected_rects`・`ignore_rects` を記入する。様式ごとに 5 枚以上、`field_rect` は全サンプルの和集合、署名は平均。最初の作業として「実物にチェックボックス3連が本当にあるか（番号を○で囲む方式か）」「欄に枠罫線があるか」を確認し、無ければ `anchor_type` や `required_cues` を変える。
+  - `python -m donor_mask template-build --in <正規化済みサンプル> --out templates/<id> --id <id> --spec <測定値.json>`（`donor_mask/build.py`）。1枚目を基準に罫線マップの ECC(AFFINE) で位置合わせし（相関 < `[calibrate] align_max_correlation` は「別様式」としてエラー）、罫線マップ・印刷物マップを平均して `avg_threshold` で二値化する。**座標は推測しない**（`--spec` に無い必須キーはエラー）。
+  - サンプルが `[calibrate] min_samples`（5）未満なら**エラー**。実データで 5 枚揃わない場合だけ `--allow-fewer` を明示し、`min_samples_met: false` の**暫定テンプレート**として書き出す（自動 ok の解禁対象にしない）。書くのは `template.json` / `ruling.png` / `print.png` だけで、サンプル画像は複製しない。
+  - `anchor_type = "none"` は「選択肢に印刷された印（□3連・○）が実在しない様式」用。このとき `required_cues` に A は入れられない（ローダーが拒否する）。**T だけの `required_cues` は不可**（テンプレート位置だけで塗る経路になるため）。
 - C2 シャドーモード（`--shadow`）で本番入力を処理し、全件 review に回して担当者の判定と照合する。
 - C3 しきい値: メトリクスごとに陽性・陰性の分布を取り、「以上」型は 陽性の最小値×0.9 と 陰性の最大値+0.02 の大きい方（`calibrate` は未実装。ログの `stages` から手で集計する）。単独で分離できないメトリクスはマージン型へ。
 - C4 自動 ok の解禁基準: テンプレートごとにシャドーモードで連続 200 件の誤通過 0 件（0/200 でも 95% 上限は約 1.5%）。それまで自動 ok は無効のまま。
@@ -135,7 +139,7 @@ README の表を参照。コードは `donor_mask/` の各段が理由コード�
 ## 8. 設計書との差分・未実装・追加（食い違いを避けるための明示）
 
 **未実装（v1 で先送り。呼ぶと終了コード 1 と「未実装」）**
-- `template-build`、`calibrate`、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあるが CLI 化していない）。`rectify` は実装済みだが、テンプレートに対する最良の非鏡像仮説を直して 5% グリッドを焼くだけ（判定はしない）。
+- `calibrate`、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあるが CLI 化していない）。`rectify` は実装済みだが、テンプレートに対する最良の非鏡像仮説を直して 5% グリッドを焼くだけ（判定はしない）。`template-build` は実装済み（`donor_mask/build.py`。§5 の C1）。
 - `labels.jsonl`・レビュー判定の記録、ok 全件のコンタクトシート目視、`donor-mask` というコマンド名（`python -m donor_mask` で動かす）。
 - 実物様式のテンプレート。同梱は合成（`synthetic_back_v1` positive、`synthetic_front_v1` / `synthetic_other_v1` negative）のみ。
 - 合成テストの変換グリッドは設計書 6.1 の全直積ではなく、一因子ずつ＋複合の固定サンプル。肌色楕円・白飛び楕円・σ=4 のぼけ・枠だけ・3 連が 2 組・はみ出しストロークは実装済み。

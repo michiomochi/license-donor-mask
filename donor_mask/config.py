@@ -61,7 +61,7 @@ _REQUIRED = {
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
              "edge_support_min", "edge_support_tol_px", "border_margin_ratio", "border_margin_px",
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",
-             "max_candidates"],
+             "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
     "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou"],
     "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
@@ -76,6 +76,7 @@ _REQUIRED = {
     "ink": ["ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
             "print_dilate_px", "open_px", "border_ignore_px"],
     "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "redetect_erode_px"],
+    "calibrate": ["min_samples", "align_max_correlation", "avg_threshold"],
     "output": ["png_compression", "preview_jpeg_quality"],
 }
 

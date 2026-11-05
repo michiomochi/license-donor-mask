@@ -45,6 +45,40 @@ def _read_png(p: Path):
     return im
 
 
+CUES = ("T", "F", "A")
+ANCHOR_TYPES = ("box3", "circle3", "none")
+
+
+def _validate_cues_and_anchor(name: str, meta: dict):
+    """required_cues と anchor_type の整合。
+
+    - `required_cues` に F も A も入っていないテンプレート（= T だけ）は拒否する。T はテンプレートの
+      位置そのものなので、それだけで塗ると「位置合わせが合っているか」を独立に確かめない経路になる。
+      実様式でアンカーが合わないときの逃げ道にしない。
+    - `anchor_type = "none"` は「印刷された選択肢マークが実在しない様式」を表す。このとき A は必須にできない。
+    """
+    cues = meta["required_cues"]
+    if not isinstance(cues, list) or not cues or any(c not in CUES for c in cues):
+        raise ConfigError(f"テンプレート {name}: required_cues は {list(CUES)} の空でない部分集合であること: {cues!r}")
+    if not ({"F", "A"} & set(cues)):
+        raise ConfigError(f"テンプレート {name}: required_cues に F か A を含めること"
+                          f"（T だけのテンプレートはテンプレート位置だけで塗る経路になるため不可）: {cues!r}")
+    at = meta["anchor_type"]
+    if at not in ANCHOR_TYPES:
+        raise ConfigError(f"テンプレート {name}: anchor_type は {list(ANCHOR_TYPES)} のいずれか: {at!r}")
+    if at == "none":
+        if "A" in cues:
+            raise ConfigError(f"テンプレート {name}: anchor_type=\"none\" のとき required_cues に A は入れられません")
+        return
+    a = meta["anchor"]
+    if not isinstance(a, dict) or any(k not in a for k in ("side", "pitch", "centers")):
+        raise ConfigError(f"テンプレート {name}: anchor には side / pitch / centers が必要")
+    if not isinstance(a["centers"], list) or len(a["centers"]) != 3:
+        raise ConfigError(f"テンプレート {name}: anchor.centers は3点")
+    if float(a["side"]) <= 0 or float(a["pitch"]) <= 0:
+        raise ConfigError(f"テンプレート {name}: anchor.side / anchor.pitch は正")
+
+
 def load_templates(root, cfg):
     """(templates(sorted by id), templates_sha256)。positive が1つも無ければ ConfigError。"""
     root = Path(root)
@@ -76,8 +110,7 @@ def load_templates(root, cfg):
                       "protected_rects", "ignore_rects", "expected_mask_area"):
                 if k not in meta:
                     raise ConfigError(f"テンプレート {d.name}: キー {k} がありません")
-            if pm is None:
-                raise ConfigError(f"テンプレート {d.name}: print.png がありません")
+            _validate_cues_and_anchor(d.name, meta)
         t = Template(meta["id"], meta["kind"], meta["label"], meta, ruling, pm,
                      [tuple(r) for r in meta.get("ignore_rects", [])])
         t.sig = layout.signature(ruling, t.ignore_rects, cfg)

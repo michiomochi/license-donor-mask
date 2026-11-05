@@ -71,6 +71,25 @@ def edge_support(quad, dist_to_edge, tol: float) -> float:
     return float(np.mean(vals)) if vals else 0.0
 
 
+def is_frame_filled(quad, shape, cfg) -> bool:
+    """カードが枠いっぱい（画像全体の輪郭が唯一の四角形）か。
+
+    4角が画像の4隅から frame_filled_corner_px 以内にあり、見かけのアスペクトが
+    カード比 1.585 ± frame_filled_aspect_tol のときだけ True。面積比では判定できない
+    （枠いっぱいのカードは area_ratio = 1.0 で C_AREA に落ち、原因が「カードが無い」と
+    区別できないため、再撮影を案内する専用の理由コードを与える）。
+    """
+    c = cfg.card
+    h, w = shape[:2]
+    tol = float(c.frame_filled_corner_px)
+    q = order_quad(quad)
+    corners = np.array([[0.0, 0.0], [w - 1.0, 0.0], [w - 1.0, h - 1.0], [0.0, h - 1.0]])
+    if float(np.linalg.norm(q - corners, axis=1).max()) > tol:
+        return False
+    asp = quad_aspect(q)
+    return abs(asp - cfg.canvas.card_aspect) <= cfg.canvas.card_aspect * float(c.frame_filled_aspect_tol)
+
+
 def geometry_check(quad, shape, dist_to_edge, cfg):
     """幾何条件（全部AND）。(失敗コード|None, メトリクス)。コードの優先順は area→angle→perspective→border→aspect→edge。"""
     c = cfg.card
@@ -126,6 +145,7 @@ def find_candidates(img, cfg) -> dict:
     def rej(code):
         rejected[code] = rejected.get(code, 0) + 1
 
+    frame_filled_seen = False
     for name, mp in maps:
         cnts, _ = cv2.findContours(mp, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
         for cn in cnts:
@@ -146,6 +166,11 @@ def find_candidates(img, cfg) -> dict:
             band = c.corner_refine_band * quad_diag(quad)
             quad, _refined = refine_corners(quad, boundary_points(cn, hull), band, int(c.corner_refine_min_points))
             quad = order_quad(quad)
+            if is_frame_filled(quad, small.shape, cfg):
+                # 画像全体の輪郭。ここでは落とさず印だけ付け、候補が1つも取れなかったときに理由コードにする
+                # （正常にカードが取れている写真で「カードが枠いっぱい」と誤って言わないため）
+                frame_filled_seen = True
+                continue
             code, met = geometry_check(quad, small.shape, dist_to_edge, cfg)
             if code:
                 rej(code)
@@ -177,4 +202,6 @@ def find_candidates(img, cfg) -> dict:
         met["maps"] = names
         cands.append({"quad": quad, "maps": names, "metrics": met})
     cands.sort(key=lambda d: (round(float(d["quad"][:, 1].mean()), 0), round(float(d["quad"][:, 0].mean()), 0)))
+    if not cands and frame_filled_seen:
+        rej("C_FRAME_FILLED")  # 「カードが枠いっぱい」＝再撮影（余白を残す）を案内する。フォールバックはしない
     return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed)}

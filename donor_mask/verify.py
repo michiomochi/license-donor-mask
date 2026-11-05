@@ -108,9 +108,15 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     al = warp_to_frame(masked, P, W, H)
     dark = layout.dark_map(al, cfg)
     x0, y0, x1, y1 = [int(round(c)) for c in window_rect(tmpl, cfg)]
-    anchor = tmpl.meta["anchor"]
-    singles = fieldmod.single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"], cfg, (x0, y0))
-    triples = fieldmod.find_triples(singles, float(anchor["pitch"]), cfg)
+    if tmpl.meta["anchor_type"] == "none":
+        # 印刷された選択肢マークが実在しない様式。再検出する対象が無い（＝残っていない）
+        singles, triples = [], []
+        res["anchor"] = "none"
+    else:
+        anchor = tmpl.meta["anchor"]
+        singles = fieldmod.single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"],
+                                             cfg, (x0, y0))
+        triples = fieldmod.find_triples(singles, float(anchor["pitch"]), cfg)
     res["singles"], res["triples"] = len(singles), len(triples)
     # マスク内を侵食してから Canny エッジを数える
     e = int(v.redetect_erode_px)

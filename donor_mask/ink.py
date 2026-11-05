@@ -15,11 +15,15 @@ SIDES = ("l", "t", "r", "b")
 
 
 def ink_map(aligned_bgr, print_map, cfg) -> np.ndarray:
+    """print_map が None のときは「印刷物マップ無し」＝暗画素を全部インクとして扱う（保守側）。"""
     k = cfg.ink
     dark = layout.dark_map(aligned_bgr, cfg)
-    pd = 2 * int(k.print_dilate_px) + 1
-    printed = cv2.dilate(print_map, np.ones((pd, pd), np.uint8))
-    ink = np.where((dark > 0) & (printed == 0), 255, 0).astype(np.uint8)
+    if print_map is None:
+        ink = dark.copy()
+    else:
+        pd = 2 * int(k.print_dilate_px) + 1
+        printed = cv2.dilate(print_map, np.ones((pd, pd), np.uint8))
+        ink = np.where((dark > 0) & (printed == 0), 255, 0).astype(np.uint8)
     b = int(k.border_ignore_px)  # カード縁（背景が写り込む）は印刷物でも手書きでもないので数えない
     if b > 0:
         ink[:b, :] = 0

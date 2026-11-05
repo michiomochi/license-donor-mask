@@ -158,12 +158,13 @@ def locate_field(aligned_bgr, tmpl: Template, cfg):
             fail("F_FRAME_NOT_FOUND", "frame_support", fm["support"], f.frame_support_min)
         else:
             cues["F"] = F
-    # A
-    anchor = tmpl.meta["anchor"]
+    # A（印刷された選択肢マーク）: required_cues に A が無いテンプレート（実様式に印刷マークが無い場合）では実行しない
+    anchor = tmpl.meta.get("anchor") or {}
     x0, y0, x1, y1 = [int(round(v)) for v in win]
-    singles = single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"], cfg, (x0, y0))
-    met["A"] = {"singles": len(singles)}
+    met["A"] = {"skipped": "A" not in req, "anchor_type": tmpl.meta["anchor_type"]}
     if "A" in req:
+        singles = single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"], cfg, (x0, y0))
+        met["A"]["singles"] = len(singles)
         if len(singles) > f.anchor_max_singles:
             fail("F_ANCHOR_MULTIPLE", "singles", len(singles), f.anchor_max_singles)
         else:

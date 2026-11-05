@@ -36,6 +36,7 @@
 | 状況 | 理由コード（例） |
 |---|---|
 | カード四辺が4点として取れない（**「画像全体をカードとみなす」フォールバックは存在しません**） | `C_NO_CARD` |
+| カードが画像いっぱい（余白ゼロで撮影。画像全体の輪郭だけがカード比 1.585±5% の四角形）→ **再撮影を案内**（条件付きフォールバックは入れていない） | `C_FRAME_FILLED` |
 | 遠近が強すぎる（対辺比 > 1.30）／端で欠けている／マップ間の合意なし | `C_PERSPECTIVE` / `C_TOUCHES_BORDER` / `C_NO_CONSENSUS` |
 | 候補が複数あり一意に決まらない（台紙・2枚写り。**面積最大を自動採用しない**） | `O_AMBIGUOUS` / `C_MULTIPLE_CARDS` |
 | 表面・他カード・鏡像 | `O_FRONT_SIDE` / `O_UNSUPPORTED_CARD` / `O_MIRRORED` |
@@ -76,6 +77,12 @@ python -m donor_mask run --in ./inbox --out ./out --shadow        # ok 相当で
 
 # 校正用: 正規化画像と 5% グリッド焼き込み画像（出力先はアクセス制限ディレクトリに）
 python -m donor_mask rectify --in ./sample.jpg --out ./calib
+
+# テンプレート作成（設計書 5.4 C1）: 正規化済みの空欄サンプル＋測定値JSON から templates/<id> を作る
+#   測定値JSON: field_rect / anchor_type / anchor / required_cues / protected_rects / ignore_rects
+#               （座標は推測しない。5枚未満は既定でエラー、--allow-fewer で暫定扱い＝min_samples_met=false）
+python -m donor_mask template-build --in ./calib_samples --out ./templates/my_back_v1 --id my_back_v1 \
+    --label back --spec ./my_back_v1_spec.json
 
 # 独立再検証（原本・マスク済みPNG・ログから V1〜V6 をやり直す）
 python -m donor_mask verify --orig ./inbox/a.jpg --masked ./out/ok/<job_id>__masked.png --log ./out/logs/<job_id>.json
@@ -134,8 +141,10 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 | 見本 | カード検出 | 向き | 検出された欄 | 被覆率 | verified | 結果 |
 |---|---|---|---|---|---|---|
-| kumaisui_driver_license.png | 候補 0 件（画像いっぱいの輪郭は面積比 ≥ 0.95 で `C_AREA`、内部の区画は `C_ASPECT` ×5 で棄却） | — | — | — | — | **review** `C_NO_CARD` |
+| kumaisui_driver_license.png | 候補 0 件（画像いっぱいの輪郭は枠いっぱい判定 `C_FRAME_FILLED` または `C_AREA`、内部の区画は `C_ASPECT` ×5 で棄却） | — | — | — | — | **review** `C_NO_CARD` |
 | mhlw_intention_01.jpg | 候補 0 件（`C_AREA` ×1、`C_ASPECT` ×2） | — | — | — | — | **review** `C_NO_CARD` |
+
+（`C_FRAME_FILLED` は画像のアスペクトがカード比 1.585±5% のときだけ付く。画像全体の輪郭はどの写真にも現れるので、他に候補が取れなかったときに限り理由コードにする。）
 
 どちらも**マスク画像は出力されません（`ok/` は空）。これは設計どおりの正しい挙動**です。見本は撮影された写真ではなく（kumaisui は背景が無く、画像の縁がカード外形にほぼ一致する切り出し〔角は透過〕、mhlw は複数の図を並べた解説図）、
 カード四辺を背景との境界から一意に取れる入力ではありません。無理に通すフォールバックは作っていません。
@@ -145,7 +154,7 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 - **実物様式のテンプレートが無い。** 同梱は合成レイアウト（`templates/synthetic_*`）のみ。テストが示すのは「想定レイアウトなら、回転・遠近・台紙・上下逆などでも静かに誤マスクしない」ことまでで、実物の様式が想定どおり（欄に枠罫線がある／選択肢の印が四角3個の縦並び など）かは**未確認**。チェックボックス前提は仮説で、○で囲む方式向けの検出器（`anchor_type = "circle3"`）は用意したが実物では未検証。
 - 欄の座標・保護領域・無視領域・各しきい値は全て「初期値」。実物での校正（DESIGN.md 5 章）が必要。
-- **未実装のサブコマンド**: `template-build`（実サンプル5枚以上からのテンプレート作成）、`calibrate`（陽性・陰性分布からのしきい値提案）、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあり、CLI 化していない）。呼ぶと終了コード 1 と「未実装」を返す。`labels.jsonl`・コンタクトシートによる ok 全件目視も未実装。
+- **未実装のサブコマンド**: `calibrate`（陽性・陰性分布からのしきい値提案）、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあり、CLI 化していない）。呼ぶと終了コード 1 と「未実装」を返す。`labels.jsonl`・コンタクトシートによる ok 全件目視も未実装。`template-build`（設計書 5.4 C1）は実装済み（正規化済みサンプルの ECC 平均から `ruling.png` / `print.png` を作り、測定値は `--spec` で必ず与える。5枚未満は既定でエラー、`--allow-fewer` で `min_samples_met=false` の暫定テンプレート）。
 - V4 の再検出は、カード検出（合意マップ 1・縁の支持率 0.5 に緩和）とチェックボックス検出・窓内エッジの確認まで。S1〜S6 の完全な再実行ではない（DESIGN.md 参照）。
 - 指かぶり・部分遮蔽は専用検出器を持たず、枠の支持率・アンカー有無・コントラストで落とす。モアレ・コピー画像は個別には検出しない。
 - 反射・ぼけ・コントラスト・解像度のしきい値、カード面積比 0.15 以上などは撮影条件に依存し、実データで要校正（例: スマホ写真でカードが画像の15%未満だと `C_AREA` で review）。

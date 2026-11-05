@@ -101,7 +101,7 @@ def test_cli_rejects_noise_fill_and_jpeg_output(tmp_path, capsys):
 
 
 def test_deferred_subcommands_are_explicitly_unimplemented(capsys):
-    for c in ("template-build", "calibrate", "make-fixtures"):
+    for c in ("calibrate", "make-fixtures"):
         assert cli.main([c]) == 1
     assert "未実装" in capsys.readouterr().err
 

@@ -1,4 +1,4 @@
-"""CLI: python -m donor_mask {run,rectify,verify}。template-build / calibrate / make-fixtures は v1 では未実装。
+"""CLI: python -m donor_mask {run,rectify,verify,template-build}。calibrate / make-fixtures は v1 では未実装。
 
 終了コード: 0=全件 ok / 3=review（または件単位の error）を含む / 1=設定・テンプレート不正や I/O の致命的エラー
 """
@@ -13,12 +13,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import card, imgio, orient, pipeline, verify
+from . import build, card, imgio, orient, pipeline, verify
 from .config import DEFAULT_CONFIG, DEFAULT_TEMPLATES, ConfigError, load_config
 from .geom import hypothesis_quads
 from .template import load_templates
 
-DEFERRED = ("template-build", "calibrate", "make-fixtures")
+DEFERRED = ("calibrate", "make-fixtures")
 
 
 def collect_inputs(p: Path):
@@ -136,6 +136,37 @@ def cmd_rectify(a) -> int:
     return 0
 
 
+def cmd_template_build(a) -> int:
+    """設計書 5.4 C1: 正規化済みの空欄サンプルからテンプレートを作る（画像は複製しない）。"""
+    cfg = load_config(a.config)
+    src, out = Path(a.inp).expanduser(), Path(a.out).expanduser()
+    if not src.exists():
+        print(f"[error] 入力が存在しません: {src}", file=sys.stderr)
+        return 1
+    bad = check_dirs(src, out)
+    if bad:
+        print(f"[error] {bad}", file=sys.stderr)
+        return 1
+    files = collect_inputs(src)
+    if not files:
+        print(f"[error] サンプル画像(jpg/jpeg/png)がありません: {src}", file=sys.stderr)
+        return 1
+    spec = {}
+    if a.spec:
+        try:
+            spec = json.loads(Path(a.spec).expanduser().read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"[error] 測定値JSONを読めません: {a.spec}: {e}", file=sys.stderr)
+            return 1
+    meta = build.build_template(files, out, cfg, template_id=a.id, label=a.label, kind=a.kind, spec=spec,
+                               allow_fewer=a.allow_fewer, min_samples=a.min_samples)
+    print(f"[template] {out}: n_samples={meta['n_samples']} min_samples_met={meta['min_samples_met']} "
+          f"align={meta['align_correlations']}")
+    print(f"[template] field_rect={meta['field_rect']} anchor_type={meta['anchor_type']} "
+          f"required_cues={meta['required_cues']}")
+    return 0
+
+
 def cmd_verify(a) -> int:
     """独立再検証: 原本・マスク済みPNG・ログだけから V1〜V6 をやり直す。"""
     cfg = load_config(a.config)
@@ -186,6 +217,18 @@ def build_parser():
     v.add_argument("--masked", required=True)
     v.add_argument("--log", required=True)
     common(v)
+    tb = sub.add_parser("template-build", help="設計書 5.4 C1: 正規化済みの空欄サンプルからテンプレートを作る")
+    tb.add_argument("--in", dest="inp", required=True, help="正規化済みサンプル（dir or ファイル。1011x638 のみ）")
+    tb.add_argument("--out", required=True, help="templates/<id> を指す（画像は複製しない）")
+    tb.add_argument("--id", required=True)
+    tb.add_argument("--kind", choices=("positive", "negative"), default="positive")
+    tb.add_argument("--label", default="back")
+    tb.add_argument("--spec", help="測定値のJSON（field_rect / anchor_type / anchor / required_cues / "
+                                  "protected_rects / ignore_rects / window_expand / expected_mask_area / note）")
+    tb.add_argument("--allow-fewer", action="store_true",
+                    help="min_samples 未満でも暫定テンプレートとして書く（min_samples_met=false）")
+    tb.add_argument("--min-samples", type=int, default=None, help="既定は config.toml [calibrate] min_samples")
+    common(tb)
     for d in DEFERRED:
         sub.add_parser(d, help="v1 では未実装（DESIGN.md 参照）")
     return ap
@@ -197,7 +240,8 @@ def main(argv=None) -> int:
         print(f"[error] {a.cmd} は v1 では未実装です（README/DESIGN の「先送り」参照）", file=sys.stderr)
         return 1
     try:
-        return {"run": cmd_run, "rectify": cmd_rectify, "verify": cmd_verify}[a.cmd](a)
+        return {"run": cmd_run, "rectify": cmd_rectify, "verify": cmd_verify,
+                "template-build": cmd_template_build}[a.cmd](a)
     except ConfigError as e:
         print(f"[error] 設定/テンプレート不正: {e}", file=sys.stderr)
         return 1
