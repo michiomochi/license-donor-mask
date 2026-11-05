@@ -147,6 +147,23 @@ README の表を参照。コードは `donor_mask/` の各段が理由コード�
   - したがって `required_cues = ["T","F"]`（`anchor_type: "none"` では A 必須にできず、T だけも不可）となり、S6 は必ず `F_FRAME_NOT_FOUND` か `F_CUE_DISAGREE` で review。**実カードの ok 経路は開かない（fail-closed は維持）**。
   - 実測の停止点: 実写真3枚は既定で S0 `Q_LOW_RES`（554〜696px < 800）、解像度ゲートだけ 200px に下げた診断でも S1 候補 0 件（`C_ASPECT`/`C_PERSPECTIVE`/`C_TOUCHES_BORDER`/`C_ANGLE`/`C_FRAME_FILLED`）。正規化カード＋灰色余白 60px では S2 の ZNCC が 0.794 / 0.567 / 0.557 まで出るが S3 が `O_AMBIGUOUS`（鏡像仮説との差 0.034〜0.087 < 0.10）。S7 は保護領域との隙間が 2px のため `M_PROTECTED_CONFLICT`（`pad_after_shrink=-1.0 < 6`）。合成テンプレートとの ZNCC は +0.005 / +0.022 / +0.069（実テンプレート相手は +0.784 / +0.534 / +0.526）。
   - 未了: 数字3連を新しい `anchor_type` として定義するか、F を「上下罫線ペア」に再定義するか（現行 `detect_frame` は単一連結成分の外接矩形＋周長支持率 0.85 なので、上下だけの枠は支持率 ~0.5 で通らない）。S7 余白規則の実様式対応。様式差の検証（3枚は同一カード）。
+  - `templates/real_back_v1/template.json` の全フィールドと根拠（**推測で埋めた値は無い**）:
+
+    | フィールド | 値 | 根拠 |
+    |---|---|---|
+    | `id` / `kind` / `label` | `real_back_v1` / `positive` / `back` | 裏面の陽性テンプレート。`template-build --id real_back_v1 --kind positive --label back` |
+    | `synthetic` | `false` | 生成器の出力ではない（実写真由来）。`build_template` が常に false を書く。テストで明示を固定 |
+    | `size` | `[1011, 638]` | 正規化キャンバス（`config.toml` の `canvas`）。入力3枚の切り出しがこのサイズであることを `build_template` が検証 |
+    | `window_expand` | `0.1` | 既定値（`field_rect` を 10% 広げた窓で S6 を見る）。実測ではなく運用既定 |
+    | `field_rect` | `[40, 300, 971, 597]` | 3枚の罫線込み外接矩形の**和集合**（`cut/field_rect.json`。中央値は x 56〜953 / y 292〜597、ばらつき x±5 / y±2）。和集合にしたのは、正規化誤差で欄が窓から出る側に倒さないため |
+    | `anchor_type` / `anchor` | `"none"` / `null` | 実物に印刷された選択肢マーク（□/○3連）が無い（等サイズ・等間隔の3連は 0 組）。推測で `box3` を入れない |
+    | `required_cues` | `["T", "F"]` | T（宣言ブロック）は必須。T のみは不可（親レビュー P1-L2）ので F を足す。A は `anchor_type="none"` では必須にできない。**F は実在しない**ので、この組み合わせは「必ず review に落ちる」ことを意味する（fail-closed を維持） |
+    | `protected_rects` | `[[56, 52, 955, 298]]` | 上の表（生年月日・住所・交付者など）の外枠。罫線込みの実測。ここは塗ってはいけない |
+    | `ignore_rects` | `[[40, 300, 971, 597]]` | 手書き・スタンプが乗りうる宣言ブロック全体。テンプレート平均・署名から除外する（＝筆跡をテンプレートに焼き込まない） |
+    | `expected_mask_area` | `345553.56` | 自動導出（`field_rect` を `[mask]` の基本余白で `padded` した面積）。手で書いていない。テストで再計算して固定 |
+    | `n_samples` / `min_samples_required` / `min_samples_met` | `3` / `5` / `false` | 入力3枚（同一カードの3撮影）< 設計書 5.4 C1 の5枚以上。`--allow-fewer` で暫定として通し、JSON に明示 |
+    | `align_correlations` | `[1.0, 0.8847, 0.9005]` | 平均化前の位置合わせ（ECC）相関。2枚目以降 0.88〜0.90 なので平均像は破綻していない |
+    | `note` | 暫定・F 不在の説明 | 上記の結論を JSON 単体で読めるようにした文 |
 - 合成テストの変換グリッドは設計書 6.1 の全直積ではなく、一因子ずつ＋複合の固定サンプル。肌色楕円・白飛び楕円・σ=4 のぼけ・枠だけ・3 連が 2 組・はみ出しストロークは実装済み。
 
 **設計書から意図して変えた／補った点**

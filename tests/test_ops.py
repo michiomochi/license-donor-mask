@@ -167,6 +167,19 @@ def test_changed_threshold_changes_config_hash(tmp_path):
     assert load_config(p).sha256 != load_config(ROOT / "config.toml").sha256
 
 
+def test_cli_help_formats_for_every_subcommand(capsys):
+    """`--help` が全サブコマンドで例外なく出る（help 文字列の % はエスケープする）。"""
+    with pytest.raises(SystemExit) as e:
+        cli.main(["--help"])
+    assert e.value.code == 0
+    for name in ("run", "rectify", "verify", "template-build", "calibrate", "make-fixtures"):
+        with pytest.raises(SystemExit) as e:
+            cli.main([name, "--help"])
+        assert e.value.code == 0, name
+    out = capsys.readouterr().out
+    assert "5%グリッド" in out
+
+
 def test_committed_templates_match_generator(cfg, tmp_path):
     """合成テンプレート（templates/synthetic_*）は tools/build_synthetic_templates.py の出力と一致する
     （手作業で書き換えていない）。実様式テンプレートは実写真から作るので、生成器の比較対象外

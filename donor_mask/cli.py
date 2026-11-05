@@ -210,7 +210,7 @@ def build_parser():
     r.add_argument("--fill", choices=sorted(pipeline.FILL_COLORS), default="black", help="単色のみ。既定 black")
     r.add_argument("--shadow", action="store_true", help="ok 相当でも ok/ に出さず全件 review（提案をレビュー画像に描く）")
     common(r)
-    rc = sub.add_parser("rectify", help="校正用: 正規化画像と5%グリッド画像を出す（出力先はアクセス制限ディレクトリに）")
+    rc = sub.add_parser("rectify", help="校正用: 正規化画像と5%%グリッド画像を出す（出力先はアクセス制限ディレクトリに）")
     rc.add_argument("--in", dest="inp", required=True)
     rc.add_argument("--out", required=True)
     common(rc)
