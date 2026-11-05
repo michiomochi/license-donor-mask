@@ -31,7 +31,7 @@ from .mask import base_pads, padded
 from .template import _validate_cues_and_anchor, load_templates
 
 META_KEYS = ("field_rect", "anchor_type", "anchor", "required_cues", "protected_rects", "ignore_rects",
-             "window_expand", "expected_mask_area", "note")
+             "window_expand", "expected_mask_area", "note", "f_rules")
 
 
 def _read_gray(p: Path) -> np.ndarray:
@@ -122,6 +122,7 @@ def build_template(samples, out_dir, cfg, *, template_id, label="back", kind="po
             "anchor_type": meta["anchor_type"],
             "anchor": meta.get("anchor"),
             "required_cues": list(meta["required_cues"]),
+            "f_rules": meta.get("f_rules"),
             "protected_rects": [[float(v) for v in r] for r in meta["protected_rects"]],
             "ignore_rects": [[float(v) for v in r] for r in meta["ignore_rects"]],
             "expected_mask_area": round(float(exp), 2),

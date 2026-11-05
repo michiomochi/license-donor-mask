@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from . import layout
-from .geom import affine3, canon_matrix, hypothesis_quads, quad_iou, warp_to_frame
+from .geom import affine3, canon_matrix, hypothesis_quads, quad_iou, rect_iou, warp_to_frame
 
 
 def normalize(img, quad, cfg):
@@ -29,16 +29,72 @@ def score_hypotheses(img, candidates, templates, cfg) -> list:
     return out
 
 
-def select_unique(hyps, candidates, cfg):
-    """S3。(best, second, reasons)。reasons は dict(code, metric, value, threshold) のリスト。"""
+def _rank(h):
+    """固定順序（同点を作らない）。S3 の並びはこのキーの昇順。"""
+    return (-h["zncc"], h["cand"], h["mirror"], h["rot"], h["template"])
+
+
+def _hyp_quad(candidates, h):
+    """仮説の四角（向き付き）。hypothesis_quads の並びは rot/90 + mirror*4。"""
+    return hypothesis_quads(candidates[h["cand"]]["quad"])[h["rot"] // 90 + (4 if h["mirror"] else 0)][2]
+
+
+def _same_family(a: str, b: str, templates, iou_min: float) -> bool:
+    """§1.5b の配置ファミリー: field_rect の IoU が iou_min 以上の陽性テンプレート同士。
+
+    テンプレート一覧を渡されなかった場合（テストの部分仮説）は、同じ id だけを同族とみなす。
+    """
+    if a == b:
+        return True
+    tmap = {t.id: t for t in (templates or [])}
+    ta, tb = tmap.get(a), tmap.get(b)
+    if ta is None or tb is None:
+        return False
+    ra, rb = ta.meta.get("field_rect"), tb.meta.get("field_rect")
+    if ra is None or rb is None:
+        return False  # 陰性テンプレート（表面・別様式）は field_rect を持たない＝同族になりえない
+    return rect_iou(tuple(ra), tuple(rb)) >= iou_min
+
+
+def find_twin(hypotheses, best, candidates, cfg, templates=None):
+    """§1.5c 鏡像双子: best と同じ候補・同じ回転で、正規化画像が左右反転になる仮説。
+
+    - 上下反転（鏡像＋180°回転）は回転が違うので twin にならない（主マージンの比較対象に残す）
+    - 照合相手は best と同じ配置ファミリー（§1.5b）のテンプレートに限る
+    - 定義は回転番号ではなく幾何で確かめる: best の四角を左右反転した四角と一致すること
+    戻りは ZNCC 最大の twin（無ければ None）。
+    """
+    fam_iou = float(cfg.select.family_iou)
+    q_best = _hyp_quad(candidates, best)
+    q_flip = q_best[[1, 0, 3, 2]]  # 左右反転
+    twins = []
+    for h in hypotheses:
+        if h is best or h["cand"] != best["cand"] or h["rot"] != best["rot"] or h["mirror"] == best["mirror"]:
+            continue
+        if not _same_family(h["template"], best["template"], templates, fam_iou):
+            continue
+        if float(np.abs(_hyp_quad(candidates, h) - q_flip).max()) > 1e-3:
+            continue  # 幾何が左右反転でないものは twin ではない（実装依存にしない）
+        twins.append(h)
+    return min(twins, key=_rank) if twins else None
+
+
+def select_unique(hyps, candidates, cfg, templates=None):
+    """S3。(best, second, mirror, reasons)。
+
+    - second は twin を除いた仮説の最大値（§1.5b / §1.5c）
+    - mirror は{"twin", "d_mirror", "m_mirror", "m3"}。M2（d_mirror ≥ mirror_margin）と
+      M3（S6 で判定。v2.1 では未実装なので "unimplemented" を明示）を持つ
+    """
     s = cfg.select
     if not hyps:
-        return None, None, [{"code": "O_LOW_SCORE", "metric": "hypotheses", "value": 0, "threshold": 1}]
-    order = sorted(range(len(hyps)), key=lambda i: (-hyps[i]["zncc"], hyps[i]["cand"], hyps[i]["mirror"],
-                                                    hyps[i]["rot"], hyps[i]["template"]))
-    best = hyps[order[0]]
-    # best と「候補・回転・鏡像・テンプレートのどれかが異なる」仮説 = best 以外の全て。その最大が second。
-    second = hyps[order[1]] if len(order) > 1 else None
+        return None, None, {"twin": None, "d_mirror": None}, [
+            {"code": "O_LOW_SCORE", "metric": "hypotheses", "value": 0, "threshold": 1}]
+    best = min(hyps, key=_rank)
+    twin = find_twin(hyps, best, candidates, cfg, templates)
+    twins = [twin] if twin is not None else []
+    rest = [h for h in hyps if h is not best and all(h is not t for t in twins)]
+    second = min(rest, key=_rank) if rest else None
     reasons = []
     if best["kind"] != "positive":
         code = "O_FRONT_SIDE" if best["label"] == "front" else "O_UNSUPPORTED_CARD"
@@ -52,6 +108,13 @@ def select_unique(hyps, candidates, cfg):
                             "threshold": s.min_margin})
     if best["mirror"]:
         reasons.append({"code": "O_MIRRORED", "metric": "mirrored", "value": True, "threshold": False})
+    # M2（§1.5c）: twin との差。twin が無い（同じテンプレートの鏡像仮説が入力に無い）ときは判定しない
+    mirror = {"twin": twin, "d_mirror": None, "m_mirror": float(s.mirror_margin), "m3": str(s.mirror_m3)}
+    if twin is not None:
+        mirror["d_mirror"] = float(best["zncc"] - twin["zncc"])
+        if mirror["d_mirror"] < float(s.mirror_margin):
+            reasons.append({"code": "O_MIRROR_AMBIGUOUS", "metric": "d_mirror", "value": mirror["d_mirror"],
+                            "threshold": float(s.mirror_margin)})
     for ci in range(len(candidates)):
         if ci == best["cand"]:
             continue
@@ -61,7 +124,7 @@ def select_unique(hyps, candidates, cfg):
             reasons.append({"code": "C_MULTIPLE_CARDS", "metric": "other_positive_zncc", "value": max(pos),
                             "threshold": s.min_zncc})
             break
-    return best, second, reasons
+    return best, second, mirror, reasons
 
 
 def refine_alignment(norm, template, cfg):

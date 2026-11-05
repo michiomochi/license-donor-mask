@@ -53,8 +53,9 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 テンプレートは `kind = positive`（対象の裏面様式）と `negative`（表面・他様式。一致したら review にする対象外様式）。
 
 ### S3 一意性（全部 AND）
-`best` = 全仮説の ZNCC 最大、`second` = best 以外の最大（候補・回転・鏡像・テンプレートのどれかが違えば別仮説なので、実質は 2 番手）。
-`best` が positive（否なら `O_FRONT_SIDE` / `O_UNSUPPORTED_CARD`）、`best ≥ 0.55`（`O_LOW_SCORE`）、`best − second ≥ 0.10` かつ差が 1e-6 超（`O_AMBIGUOUS`）、非鏡像（`O_MIRRORED`。自動で反転し直さない）、別の場所（四角形 IoU < 0.1）に positive ZNCC ≥ 0.55 の候補が無い（`C_MULTIPLE_CARDS`）。同点は並び順に依存させず `O_AMBIGUOUS`。上下逆・時計回りも同じ枠組みで決まる。
+`best` = 全仮説の ZNCC 最大、`twin` = `best` の鏡像双子（§1.5c。同じ候補・同じ回転で、正規化画像が左右反転になる仮説。照合相手は `best` と同じ配置ファミリーのテンプレートで、回転番号ではなく四角形の幾何で確かめる）、`second` = `best` と `twin` を除いた最大。
+`best` が positive（否なら `O_FRONT_SIDE` / `O_UNSUPPORTED_CARD`）、`best ≥ 0.55`（`O_LOW_SCORE`）、`best − second ≥ 0.10` かつ差が 1e-6 超（`O_AMBIGUOUS`）、非鏡像（`O_MIRRORED`。自動で反転し直さない）、`best − twin ≥ mirror_margin`（`O_MIRROR_AMBIGUOUS`。M2）、別の場所（四角形 IoU < 0.1）に positive ZNCC ≥ 0.55 の候補が無い（`C_MULTIPLE_CARDS`）。同点は並び順に依存させず `O_AMBIGUOUS`。上下逆・時計回りも同じ枠組みで決まる。上下反転（鏡像＋180°）は回転が違うので twin にせず、主マージンの比較対象に残す。
+`mirror_margin` は 0 以下にできず、`mirror_m3` は `"unimplemented"` 以外を受け付けない（`ConfigError`。§1.5c の「twin 除外と M2・M3 はセット、無効化は起動時エラー」）。M3 は未実装なので判定を保留し、S3 `mirror.m3` と S6 `M3` に `pending_code: "F_ANCHOR_MIRRORED"` を残す。
 
 ### S4 精密位置合わせ
 罫線マップ（`ignore_rects` を 0、σ=3 でぼかし）同士で `findTransformECC(MOTION_AFFINE, 50 回, eps 1e-5)`。相関 ≥ 0.70、平行移動 ≤ カード幅の 2%、スケール 0.97〜1.03、回転 ±2° 以内（外れたら `R_ECC_FAIL`）。以後、**元画像 → 位置合わせ済みテンプレート座標系**への写像は「(正規化→元の射影) ∘ (ECC のアフィン)」の合成 `P_t2o` 1 つで一貫させ、1 回の補間で `aligned` 画像を作る（S5〜S7、V1/V4/V5 はこの座標系）。行列は有効数字 12 桁でログに固定（透視項が 1e-7 程度で、小数桁の丸めだと数 px ずれるため）。
@@ -64,7 +65,7 @@ status は `ok` / `review` / `error`（`error` は入力が読めない・出力
 
 ### S6 欄の特定（独立した 3 手がかり）
 - **T**: テンプレートの `field_rect`（位置合わせ後の座標）。
-- **F**: 罫線マップの連結成分のうち外接矩形が T と IoU 最大のもの（下限 0.30）。周長上の罫線支持率 ≥ 0.85（`F_FRAME_NOT_FOUND`）。
+- **F**: 2 モード。テンプレートが `f_rules`（期待位置の線分）を持つ場合は「線分の一致」で判定する（実様式用。設計書 §4 (D) 第一候補）。横罫線・縦罫線ごとに「期待バンド ±`f_rules_tol_px` に罫線画素が乗っている列（行）の割合」＝支持率を測り、全部が `f_rules_support_min` 以上なら成立（`F_FRAME_NOT_FOUND`）。**閉じた矩形は要求しない**。F の矩形は宣言した期待位置の外接矩形（検出画素の外接にすると 1 本外れた線が他の線の位置を押し広げるため）。`f_rules` を持たないテンプレート（合成）は従来どおり「罫線マップの連結成分のうち外接矩形が T と IoU 最大のもの（下限 0.30）、周長上の罫線支持率 ≥ 0.85」（`F_FRAME_NOT_FOUND`）。`f_rules` は読み込み時に h_lines 3 本以上・v_lines 2 本以上を要求する（F を 1 本の線に弱める書き換えを止める）。
 - **A**: 探索窓内で暗画素マップの**外側輪郭**から印の単体候補（`anchor_type = box3`: 4 頂点・辺長が期待値の ±35%・アスペクト 0.80〜1.25・矩形度 ≥ 0.80。`circle3`: 同サイズ・円形度 ≥ 0.80）を取り、3 連条件（辺長の変動係数 ≤ 0.12、x 中心のずれ ≤ 辺長の 0.35 倍、間隔比 ≤ 1.20、間隔が期待値の ±20%）を満たす組が**ちょうど 1 つ**（0 なら `F_ANCHOR_NOT_FOUND`、2 以上なら `F_ANCHOR_MULTIPLE`）。3 連の実位置から（平行移動＋等方スケールの）相似変換を求め、`field_rect` を写したものを A の欄推定とする。手書きで中が埋まっていても外側輪郭で判定する。
 - 一致判定: IoU(T,F) ≥ 0.80、IoU(F,A) ≥ 0.85、IoU(T,A) ≥ 0.80、F と A（と 3 つの印）が探索窓内に完全に収まる（`F_CUE_DISAGREE`）。必須の手がかりは `template.required_cues`（既定 T,F,A）。
 - 欄矩形 `R` = T ∪ F ∪ A の外接矩形（保守側）。
@@ -139,6 +140,8 @@ README の表を参照。コードは `donor_mask/` の各段が理由コード�
 ## 8. 設計書との差分・未実装・追加（食い違いを避けるための明示）
 
 **未実装（v1 で先送り。呼ぶと終了コード 1 と「未実装」）**
+- 設計書 v2.1 §1.5c の **M3（印刷数字「2」「3」の左右反転照合）**。M1（`O_MIRRORED`）・M2（`d_mirror ≥ mirror_margin`）と twin の主マージン除外は実装済み。M3 は未実装なので `[select] mirror_m3 = "unimplemented"` を必須にし（他の値は `ConfigError`）、S3 `mirror.m3` / S6 `M3` に `pending_code: "F_ANCHOR_MIRRORED"`（判定を保留）を残す。**M3 が無い間は、鏡像入力でも d_mirror ≥ 0.03 なら M2 を通過しうる**。
+- 設計書 v2.1 §1.5b の「配置ファミリー同士を second にしない」規則は、`field_rect` の IoU ≥ `family_iou` の判定まで実装済みだが、**second からの除外には未適用**（同族テンプレートが 1 つしかない現状では結果に影響しない。回転違いを同族扱いすると向きの曖昧さを検出できなくなるため、定義の詰めが必要）。
 - `calibrate`、`make-fixtures`（生成器は `tests/fixtures_gen.py` にあるが CLI 化していない）。`rectify` は実装済みだが、テンプレートに対する最良の非鏡像仮説を直して 5% グリッドを焼くだけ（判定はしない）。`template-build` は実装済み（`donor_mask/build.py`。§5 の C1）。
 - `labels.jsonl`・レビュー判定の記録、ok 全件のコンタクトシート目視、`donor-mask` というコマンド名（`python -m donor_mask` で動かす）。
 - 実物様式のテンプレートは**暫定版のみ**。同梱は合成（`synthetic_back_v1` positive、`synthetic_front_v1` / `synthetic_other_v1` negative）と、実写真3枚（**同一カードの3撮影**）から作った `real_back_v1`（positive、`n_samples=3` / `min_samples_met: false`）。

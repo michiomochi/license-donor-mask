@@ -79,6 +79,46 @@ def _validate_cues_and_anchor(name: str, meta: dict):
         raise ConfigError(f"テンプレート {name}: anchor.side / anchor.pitch は正")
 
 
+def _num_pair(v) -> bool:
+    return (isinstance(v, list) and len(v) == 2
+            and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in v))
+
+
+def _validate_f_rules(name: str, meta: dict, size, ):
+    """f_rules の検証（任意キー）。F を「線分の一致」で判定する様式の期待位置。
+
+    - h_lines（横罫線）3本以上・v_lines（縦罫線）2本以上を要求する。F を1本の線に弱める
+      書き換えを読み込みで止めるため（設計 §1.8a の「手がかりを弱めない」）
+    - 各線は {"y": [lo, hi], "x": [x0, x1]}（縦線は {"x": [lo, hi], "y": [y0, y1]}）。
+      lo < hi、キャンバス内であること
+    """
+    fr = meta.get("f_rules")
+    if fr is None:
+        return
+    if not isinstance(fr, dict):
+        raise ConfigError(f"テンプレート {name}: f_rules はオブジェクトであること")
+    W, H = float(size[0]), float(size[1])
+    for key, band_key, span_key, minimum, limit in (("h_lines", "y", "x", 3, H), ("v_lines", "x", "y", 2, W)):
+        lines = fr.get(key)
+        if not isinstance(lines, list) or len(lines) < minimum:
+            raise ConfigError(f"テンプレート {name}: f_rules.{key} は {minimum} 本以上（F を弱めない）")
+        for i, rule in enumerate(lines):
+            if not isinstance(rule, dict) or band_key not in rule or span_key not in rule:
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}] には {band_key} と {span_key} が必要")
+            band, span = rule[band_key], rule[span_key]
+            if not (_num_pair(band) and _num_pair(span)):
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}] の {band_key}/{span_key} は数値2つ")
+            if band[1] <= band[0]:
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{band_key} は lo < hi")
+            if span[1] <= span[0]:
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{span_key} は lo < hi")
+            if not (0 <= band[0] <= band[1] <= limit):
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{band_key} がキャンバス外")
+            other = W if key == "h_lines" else H
+            if not (0 <= span[0] <= span[1] <= other):
+                raise ConfigError(f"テンプレート {name}: f_rules.{key}[{i}].{span_key} がキャンバス外")
+
+
 def load_templates(root, cfg):
     """(templates(sorted by id), templates_sha256)。positive が1つも無ければ ConfigError。"""
     root = Path(root)
@@ -111,6 +151,7 @@ def load_templates(root, cfg):
                 if k not in meta:
                     raise ConfigError(f"テンプレート {d.name}: キー {k} がありません")
             _validate_cues_and_anchor(d.name, meta)
+            _validate_f_rules(d.name, meta, meta.get("size") or [W, H])
         t = Template(meta["id"], meta["kind"], meta["label"], meta, ruling, pm,
                      [tuple(r) for r in meta.get("ignore_rects", [])])
         t.sig = layout.signature(ruling, t.ignore_rects, cfg)

@@ -58,6 +58,70 @@ def detect_frame(rul: np.ndarray, T, cfg):
     return rect, {"found": True, "iou_T": iou, "support": sup}
 
 
+def band_support(rul: np.ndarray, band, span, horizontal: bool, tol: int):
+    """期待バンド [lo, hi]（横線なら y、縦線なら x）に罫線画素が乗っている割合。
+
+    span は線に沿った範囲（横線なら x、縦線なら y）。band の外側 tol px まで許す。
+    戻り: (支持率, 検出位置の中央値 px | None, ヒットした列/行の数)
+    """
+    H, W = rul.shape
+    lo = max(0, int(round(band[0])) - int(tol))
+    hi = min(H if horizontal else W, int(round(band[1])) + int(tol) + 1)
+    s0 = max(0, int(round(span[0])))
+    s1 = min(W if horizontal else H, int(round(span[1])))
+    if hi <= lo or s1 <= s0:
+        return 0.0, None, 0
+    if horizontal:
+        sub = rul[lo:hi, s0:s1] > 0          # (rows, cols)
+        hit = sub.any(axis=0)
+        pos = np.argmax(sub, axis=0) + lo
+    else:
+        sub = rul[s0:s1, lo:hi] > 0          # (rows, cols)
+        hit = sub.any(axis=1)
+        pos = np.argmax(sub, axis=1) + lo
+    if not hit.size:
+        return 0.0, None, 0
+    n = int(hit.sum())
+    return (n / float(hit.size)), (float(np.median(pos[hit])) if n else None), n
+
+
+def detect_rule_segments(rul: np.ndarray, f_rules: dict, cfg):
+    """§4 (D) の F 再定義: テンプレートの期待位置にある罫線（線分）の一致。
+
+    閉じた矩形は要求しない（実様式に囲み枠が無いため）。横罫線・縦罫線のそれぞれで
+    「期待バンドの範囲に罫線画素が乗っている列（行）の割合」＝支持率を測り、全部が
+    `f_rules_support_min` 以上なら F 成立。F の矩形は宣言した期待位置の外接矩形
+    （検出画素の外接にすると、1本外れた線が他の線の位置を押し広げるため）。
+
+    戻り: (rect|None, metrics)。rect はテンプレート座標。
+    """
+    f = cfg.field
+    tol = int(f.f_rules_tol_px)
+    smin = float(f.f_rules_support_min)
+    met = {"mode": "segments", "found": False, "support_min": smin, "tol_px": tol, "rules": []}
+    xs, ys, ok = [], [], True
+    for key, band_key, span_key, horizontal in (("h_lines", "y", "x", True), ("v_lines", "x", "y", False)):
+        for i, rule in enumerate(f_rules.get(key) or []):
+            band, span = rule[band_key], rule[span_key]
+            sup, center, n = band_support(rul, band, span, horizontal, tol)
+            found = sup >= smin
+            met["rules"].append({"kind": "h" if horizontal else "v", "index": i,
+                                 "band": [float(v) for v in band], "span": [float(v) for v in span],
+                                 "support": float(sup), "center_px": center, "hit": n, "found": bool(found)})
+            ok = ok and found
+            if horizontal:
+                ys += [float(band[0]), float(band[1])]
+                xs += [float(span[0]), float(span[1])]
+            else:
+                xs += [float(band[0]), float(band[1])]
+                ys += [float(span[0]), float(span[1])]
+    if not met["rules"] or not ok:
+        return None, met
+    rect = (min(xs), min(ys), max(xs), max(ys))
+    met.update({"found": True, "rect": list(rect)})
+    return rect, met
+
+
 # ------------------------------------------------------------------ A: アンカー（選択肢の印）
 def single_candidates(dark_crop: np.ndarray, expected_side: float, anchor_type: str, cfg, origin):
     """窓内の暗画素マップの外側輪郭から、印の単体候補を取る。手書きで中が埋まっていても外側輪郭で判定する。"""
@@ -142,22 +206,40 @@ def locate_field(aligned_bgr, tmpl: Template, cfg):
     T = tmpl.rect("field_rect")
     win = window_rect(tmpl, cfg)
     req = list(tmpl.meta["required_cues"])
-    met, reasons = {"window": list(win), "required": req}, []
+    met: dict = {"window": list(win), "required": req}
+    reasons = []
 
     def fail(code, metric, value, thr):
         reasons.append({"code": code, "metric": metric, "value": value, "threshold": thr})
 
     cues = {"T": T, "window": win, "F": None, "A_boxes": None, "A": None}
-    # F
-    F, fm = detect_frame(rul, T, cfg)
-    met["F"] = fm
-    if "F" in req:
-        if F is None:
-            fail("F_FRAME_NOT_FOUND", "iou_T_best", 0, f.frame_min_iou)
-        elif fm["support"] < f.frame_support_min:
-            fail("F_FRAME_NOT_FOUND", "frame_support", fm["support"], f.frame_support_min)
-        else:
-            cues["F"] = F
+    # F: テンプレートが f_rules を持つ場合は「線分の一致」（実様式用。§4 (D)）。
+    #    持たない場合は従来どおり「T と IoU 最大の閉じた枠」（合成テンプレート用）
+    f_rules = tmpl.meta.get("f_rules")
+    if f_rules:
+        F, fm = detect_rule_segments(rul, f_rules, cfg)
+        met["F"] = fm
+        if "F" in req:
+            if F is None:
+                worst = min(fm["rules"], key=lambda r: r["support"]) if fm["rules"] else None
+                fail("F_FRAME_NOT_FOUND", "f_rule_support",
+                     worst["support"] if worst else 0.0, f.f_rules_support_min)
+            else:
+                cues["F"] = F
+    else:
+        F, fm = detect_frame(rul, T, cfg)
+        met["F"] = fm
+        if "F" in req:
+            if F is None:
+                fail("F_FRAME_NOT_FOUND", "iou_T_best", 0, f.frame_min_iou)
+            elif fm["support"] < f.frame_support_min:
+                fail("F_FRAME_NOT_FOUND", "frame_support", fm["support"], f.frame_support_min)
+            else:
+                cues["F"] = F
+    # M3（§1.5c の鏡像ゲート。印刷数字の左右反転照合）は v2.1 の一部未実装。
+    #   黙って飛ばさず、判定を保留したことと、保留している理由コードをログに残す。
+    met["M3"] = {"mode": str(cfg.select.mirror_m3),
+                 "pending_code": "F_ANCHOR_MIRRORED" if str(cfg.select.mirror_m3) == "unimplemented" else None}
     # A（印刷された選択肢マーク）: required_cues に A が無いテンプレート（実様式に印刷マークが無い場合）では実行しない
     anchor = tmpl.meta.get("anchor") or {}
     x0, y0, x1, y1 = [int(round(v)) for v in win]
@@ -185,7 +267,8 @@ def locate_field(aligned_bgr, tmpl: Template, cfg):
 
     # 一致判定（全部 AND）
     ious = {}
-    if cues["F"] is not None:
+    # F が線分（f_rules）のときは IoU(T,F) の代わりに各線分の支持率・位置ずれで判定済み（§4 (D)）
+    if cues["F"] is not None and not f_rules:
         ious["TF"] = rect_iou(T, cues["F"])
         if ious["TF"] < f.iou_tf_min:
             fail("F_CUE_DISAGREE", "iou_TF", ious["TF"], f.iou_tf_min)

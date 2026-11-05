@@ -48,6 +48,9 @@ min_zncc = 0.55
 min_margin = 0.10
 tie_eps = 1e-6
 multi_card_iou = 0.10
+family_iou = 0.90              # §1.5b 配置ファミリー（field_rect 同士の IoU）。同族は互いに second にしない
+mirror_margin = 0.03           # §1.5c M2: best.zncc - twin.zncc >= これ。0 以下は ConfigError（無効化できない）
+mirror_m3 = "unimplemented"    # §1.5c M3（印刷数字の左右反転照合）は v2.1 の一部未実装。この値以外は ConfigError
 
 [ecc]                          # S4
 iterations = 50
@@ -70,6 +73,8 @@ contrast_min_p95_p5 = 60.0
 frame_support_min = 0.85
 frame_support_band_px = 3
 frame_min_iou = 0.30           # F 候補として検討する下限（これ未満は F_FRAME_NOT_FOUND）
+f_rules_support_min = 0.85     # F（線分の一致。template.json の f_rules）の支持率しきい値
+f_rules_tol_px = 6             # F の各線分の位置ずれ許容（期待バンドの外側にこの px まで）
 anchor_side_tol = 0.35
 anchor_aspect_min = 0.80
 anchor_aspect_max = 1.25

@@ -63,11 +63,12 @@ _REQUIRED = {
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",
              "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
-    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou"],
+    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3"],
     "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
             "scale_min", "scale_max", "max_rotation_deg"],
     "quality": ["glare_level", "glare_max_ratio", "blur_min_laplacian_var", "contrast_min_p95_p5"],
-    "field": ["frame_support_min", "frame_support_band_px", "frame_min_iou", "anchor_side_tol",
+    "field": ["frame_support_min", "frame_support_band_px", "frame_min_iou", "f_rules_support_min", "f_rules_tol_px",
+              "anchor_side_tol",
               "anchor_aspect_min", "anchor_aspect_max", "anchor_rectangularity_min", "anchor_circularity_min",
               "anchor_max_singles", "triple_side_cv_max", "triple_xshift_max", "triple_gap_ratio_max",
               "triple_pitch_tol", "iou_tf_min", "iou_fa_min", "iou_ta_min"],
@@ -79,6 +80,9 @@ _REQUIRED = {
     "calibrate": ["min_samples", "align_max_correlation", "avg_threshold"],
     "output": ["png_compression", "preview_jpeg_quality"],
 }
+
+# 文字列で持つ設定キー（列挙値）。数値・bool を許すと「無効化」できてしまうものだけをここに置く。
+_STRING_KEYS = {("select", "mirror_m3"): ("unimplemented",)}
 
 
 def load_config(path=None) -> Config:
@@ -95,6 +99,34 @@ def load_config(path=None) -> Config:
             if k not in raw[sec]:
                 raise ConfigError(f"設定キーがありません: [{sec}] {k}")
             v = raw[sec][k]
+            allowed = _STRING_KEYS.get((sec, k))
+            if allowed is not None:  # 文字列で持つキー（無効化できない列挙値）は数値にできない
+                if not isinstance(v, str) or v not in allowed:
+                    raise ConfigError(f"設定値は {list(allowed)} のいずれかです: [{sec}] {k} = {v!r}")
+                continue
             if isinstance(v, bool) or not isinstance(v, (int, float, list)):
                 raise ConfigError(f"設定値が数値ではありません: [{sec}] {k} = {v!r}")
+    _validate_mirror_gate(raw)
     return Config(raw, hashlib.sha256(data).hexdigest(), str(p))
+
+
+def _validate_mirror_gate(raw: dict):
+    """§1.5c の鏡像ゲート M2・M3 は「無効にできない」。緩める設定は起動時に ConfigError。
+
+    - M2（d_mirror ≥ mirror_margin）: 0 以下にできない
+    - M3（印刷数字の左右反転照合）: v2.1 の一部未実装なので `unimplemented` だけを許す。
+      黙って無効化する値（off / false / 0 など）は入れられない
+    - 配置ファミリー family_iou も (0, 1] の外は不可
+    """
+    s, f = raw["select"], raw["field"]
+    if not float(s["mirror_margin"]) > 0:
+        raise ConfigError(f"[select] mirror_margin は正の数（M2 を無効化できない）: {s['mirror_margin']!r}")
+    if not (0.0 < float(s["family_iou"]) <= 1.0):
+        raise ConfigError(f"[select] family_iou は (0, 1]: {s['family_iou']!r}")
+    if s["mirror_m3"] != "unimplemented":
+        raise ConfigError(f"[select] mirror_m3 は \"unimplemented\" のみ（M3 は未実装。"
+                          f"無効化・別の値は不可）: {s['mirror_m3']!r}")
+    if not (0.0 < float(f["f_rules_support_min"]) <= 1.0):
+        raise ConfigError(f"[field] f_rules_support_min は (0, 1]: {f['f_rules_support_min']!r}")
+    if int(f["f_rules_tol_px"]) < 0:
+        raise ConfigError(f"[field] f_rules_tol_px は 0 以上: {f['f_rules_tol_px']!r}")

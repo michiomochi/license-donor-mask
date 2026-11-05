@@ -56,8 +56,8 @@ def s2_score(img, cands, templates, cfg):
     return orient.score_hypotheses(img, cands, templates, cfg)
 
 
-def s3_select(hyps, cands, cfg):
-    return orient.select_unique(hyps, cands, cfg)
+def s3_select(hyps, cands, cfg, templates=None):
+    return orient.select_unique(hyps, cands, cfg, templates)
 
 
 def s4_align(norm, tmpl, cfg):
@@ -246,8 +246,13 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
         _add(rec, "S2", {"n_hypotheses": len(hyps), "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")}
                                                             for h in top]})
-        best, second, rs = _run("S3", s3_select, hyps, cands, cfg)
-        _add(rec, "S3", {"best": best, "second": second})
+        best, second, mirror, rs = _run("S3", s3_select, hyps, cands, cfg, templates)
+        # M3 は v2.1 の一部未実装（黙って無効化しない）。判定を保留していることをログに残す
+        mirror = dict(mirror or {})
+        if str(cfg.select.mirror_m3) == "unimplemented":
+            mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
+                            "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+        _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
         if rs:
             _fail("S3", rs)
         tmpl = next(t for t in templates if t.id == best["template"])

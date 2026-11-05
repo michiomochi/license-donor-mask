@@ -4,10 +4,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from conftest import assert_ok_invariants, ok_files, reason_codes, run_fixture
+from conftest import ROOT, assert_ok_invariants, ok_files, reason_codes, run_fixture
 
 import fixtures_gen as fx
 from donor_mask import pipeline, verify
+from donor_mask.config import ConfigError, load_config
 
 
 def assert_review(rec, od, codes_any=None):
@@ -98,10 +99,87 @@ def test_orientation_tie_is_ambiguous_not_order_dependent(cfg):
     """同点（1e-6 以内）は並び順で決めず O_AMBIGUOUS。"""
     cands = [{"quad": np.array([[0, 0], [1, 0], [1, 1], [0, 1]], float)}]
     h = lambda rot, z: {"cand": 0, "rot": rot, "mirror": False, "template": "t", "kind": "positive", "label": "back", "zncc": z}  # noqa: E731
-    best, second, rs = pipeline.orient.select_unique([h(0, 0.9), h(180, 0.9 - 1e-9)], cands, cfg)
+    best, second, mirror, rs = pipeline.orient.select_unique([h(0, 0.9), h(180, 0.9 - 1e-9)], cands, cfg)
     assert "O_AMBIGUOUS" in [r["code"] for r in rs]
-    best, second, rs = pipeline.orient.select_unique([h(180, 0.9), h(0, 0.9)], cands, cfg)
+    best, second, mirror, rs = pipeline.orient.select_unique([h(180, 0.9), h(0, 0.9)], cands, cfg)
     assert "O_AMBIGUOUS" in [r["code"] for r in rs]
+
+
+# ---- §1.5c 鏡像双子（twin）: twin だけを主マージンから外し、M2 で鏡像を別に見る
+def _qcands():
+    return [{"quad": np.array([[0, 0], [100, 0], [100, 60], [0, 60]], float)},
+            {"quad": np.array([[200, 0], [300, 0], [300, 60], [200, 60]], float)}]
+
+
+def _qh(rot, z, mirror=False, cand=0, template="t"):
+    return {"cand": cand, "rot": rot, "mirror": mirror, "template": template,
+            "kind": "positive", "label": "back", "zncc": z}
+
+
+def _codes(rs):
+    return [r["code"] for r in rs]
+
+
+def test_twin_is_excluded_from_the_main_margin(cfg):
+    """twin（同候補・同rot・mirror 反転）は second に入らない。3位との差で O_AMBIGUOUS を判定する。"""
+    best, second, mirror, rs = pipeline.orient.select_unique(
+        [_qh(0, 0.90), _qh(0, 0.70, mirror=True), _qh(180, 0.30)], _qcands(), cfg)
+    assert best["zncc"] == pytest.approx(0.90) and best["mirror"] is False
+    assert second["rot"] == 180, "twin が second に残っている"
+    assert mirror["twin"]["mirror"] is True
+    assert mirror["d_mirror"] == pytest.approx(0.20)
+    assert "O_AMBIGUOUS" not in _codes(rs)
+
+
+def test_mirror_margin_shortfall_is_o_mirror_ambiguous(cfg):
+    """M2: best − twin < mirror_margin なら O_MIRROR_AMBIGUOUS（twin を外しても通さない）。"""
+    m = cfg.select.mirror_margin
+    best, second, mirror, rs = pipeline.orient.select_unique(
+        [_qh(0, 0.90), _qh(0, 0.90 - m / 2, mirror=True), _qh(180, 0.30)], _qcands(), cfg)
+    assert mirror["d_mirror"] < m
+    assert second["rot"] == 180, "twin が second に残っている"
+    assert "O_MIRROR_AMBIGUOUS" in _codes(rs)
+    assert "O_AMBIGUOUS" not in _codes(rs)
+
+
+def test_upside_down_is_not_a_twin_and_still_competes(cfg):
+    """上下反転（鏡像＋180°）は twin ではない。主マージンの比較対象に残る。"""
+    best, second, mirror, rs = pipeline.orient.select_unique(
+        [_qh(0, 0.90), _qh(180, 0.88, mirror=True)], _qcands(), cfg)
+    assert mirror["twin"] is None and mirror["d_mirror"] is None
+    assert second["rot"] == 180
+    assert "O_AMBIGUOUS" in _codes(rs)
+
+
+def test_twin_requires_same_candidate_same_rotation_and_same_family(cfg):
+    """別候補・別rot・別ファミリー（field_rect が違うテンプレート）は twin にしない。"""
+    for hyps in ([_qh(0, 0.90), _qh(0, 0.88, mirror=True, cand=1)],
+                 [_qh(0, 0.90), _qh(90, 0.88, mirror=True)],
+                 [_qh(0, 0.90), _qh(0, 0.88, mirror=True, template="u")]):
+        best, second, mirror, rs = pipeline.orient.select_unique(hyps, _qcands(), cfg)
+        assert mirror["twin"] is None
+        assert second is not None and second["zncc"] == pytest.approx(0.88)
+        assert "O_AMBIGUOUS" in _codes(rs)
+
+
+def test_mirror_gate_cannot_be_disabled_in_config(tmp_path):
+    """§1.5c の不変条件: twin 除外と M2・M3 は一体。緩める設定は起動しない（ConfigError）。"""
+    src = (ROOT / "config.toml").read_text()
+    for old, new in (("mirror_margin = 0.03", "mirror_margin = 0.0"),
+                     ("mirror_m3 = \"unimplemented\"", "mirror_m3 = \"off\""),
+                     ("family_iou = 0.90", "family_iou = 0.0"),
+                     ("mirror_margin = 0.03", "mirror_margin = -0.03")):
+        p = tmp_path / "bad.toml"
+        p.write_text(src.replace(old, new))
+        with pytest.raises(ConfigError):
+            load_config(p)
+
+
+def test_m3_unimplemented_is_logged_not_silently_dropped(cfg, tmpls, tmp_path):
+    """M3（印刷数字の左右反転照合）は v2.1 の一部未実装。黙って無効化せず、保留をログに残す。"""
+    rec, _, _ = run_fixture(tmp_path, fx.make({"seed": 2}), cfg, tmpls)
+    m3 = rec["stages"]["S3"]["mirror"]["m3"]
+    assert m3["status"] == "unimplemented" and m3["pending_code"] == "F_ANCHOR_MIRRORED"
 
 
 # ---- 例外注入: 各段で例外 → X_EXCEPTION で review。ok/ は空のまま
