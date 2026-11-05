@@ -14,7 +14,7 @@ from . import card as cardmod
 from . import field as fieldmod
 from . import imgio, layout
 from . import ink as inkmod
-from .geom import apply_h, polygon_mask, quad_diag, quad_dist, rect_poly, warp_to_frame
+from .geom import apply_h, polygon_mask, quad_diag, quad_dist, rect_inside, rect_poly, warp_to_frame
 from .template import window_rect
 
 
@@ -89,10 +89,30 @@ def v3_outside(arr, orig, mask):
     return {"pass": n == 0, "code": None if n == 0 else "V_OUTSIDE_CHANGED", "metrics": {"diff_pixels_outside": n}}
 
 
+def _digit_max_in_rects(gray: np.ndarray, patches, rects) -> tuple:
+    """rects（テンプレート座標）のそれぞれでパッチを照合し、最大値と「照合できた矩形の数」を返す。
+
+    矩形がパッチより小さい（＝そこに数字が収まらない）ときは照合しない。1つも照合できなければ
+    最大値は -1 で、呼び出し側が fail-closed に倒す。
+    """
+    H, W = gray.shape[:2]
+    best, n = -1.0, 0
+    for rect in rects:
+        x0, y0, x1, y1 = [int(round(c)) for c in rect]
+        crop = gray[max(0, y0):min(H, y1), max(0, x0):min(W, x1)].astype(np.float32)
+        for p in patches:
+            if crop.shape[0] < p.shape[0] or crop.shape[1] < p.shape[1]:
+                continue
+            r = np.nan_to_num(cv2.matchTemplate(crop, p.astype(np.float32), cv2.TM_CCOEFF_NORMED), nan=-1.0)
+            best = max(best, float(r.max()))
+            n += 1
+    return best, n
+
+
 def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     """出力に S1 とアンカー検出を再適用し、痕跡が残っていないこと。"""
     v = cfg.verify
-    res = {"card": None, "singles": None, "triples": None, "edges_in_mask": None}
+    res: dict = {"card": None, "singles": None, "triples": None, "edges_in_mask": None}
     # カード四辺が壊れていない
     logged = np.asarray(geom["card_quad"], np.float64)
     # 黒塗りで Otsu の閾値が変わり、マスクがカード縁に近いと縁のエッジも弱まる。再検出は 1 マップ合意・縁の支持率 0.5 で緩め、
@@ -112,6 +132,21 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
         # 印刷された選択肢マークが実在しない様式。再検出する対象が無い（＝残っていない）
         singles, triples = [], []
         res["anchor"] = "none"
+    elif tmpl.meta["anchor_type"] == "digits123":
+        # 設計 §3 V4 の「数字パッチの照合 < 0.3」を digits123 で具体化したもの。測るのは
+        # 「位置決めに使った数字の3矩形」そのもの（出力の画素を読む）。
+        #   - 数字の3矩形がマスク矩形に完全に入っていること（塗り残しの検出。ここが破れる経路は実在する:
+        #     S7 が保護領域との隙間で余白を縮めたときにマスクが欄の内側へ寄る場合）
+        #   - その3矩形の中の照合最大値 < digit_absent_max（塗りが実際に効いていること）
+        # 探索窓全体では測らない: 窓の外（保護領域や欄の外）には別の印刷数字が実在し、塗ってはいけないので、
+        # そこで高い値が出るのは正常（偽の fail になる）。
+        singles, triples = [], []
+        res["anchor"] = "digits123"
+        boxes = [tuple(float(c) for c in b) for b in (geom["cues"].get("A_boxes") or [])]
+        mrect = tuple(float(c) for c in geom["mask_rect"])
+        res["digit_boxes"] = len(boxes)
+        res["digit_boxes_in_mask"] = bool(boxes) and all(rect_inside(b, mrect) for b in boxes)
+        res["digit_max"], res["digit_regions"] = _digit_max_in_rects(layout.to_gray(al), tmpl.digit_patches, boxes)
     else:
         anchor = tmpl.meta["anchor"]
         singles = fieldmod.single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"],
@@ -126,6 +161,10 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     if not card_ok:
         return {"pass": False, "code": "V_CARD_DAMAGED", "metrics": res}
     ok = len(singles) == 0 and len(triples) == 0 and res["edges_in_mask"] == 0
+    if "digit_max" in res:
+        # 照合できた矩形が 0 なら「確かめられない」ので通さない（fail-closed）
+        ok = (ok and res["digit_boxes"] > 0 and res["digit_boxes_in_mask"] and res["digit_regions"] > 0
+              and res["digit_max"] < v.digit_absent_max)
     return {"pass": ok, "code": None if ok else "V_REDETECT_TRACE", "metrics": res}
 
 

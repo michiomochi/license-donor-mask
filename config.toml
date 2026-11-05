@@ -88,6 +88,14 @@ triple_pitch_tol = 0.20
 iou_tf_min = 0.80
 iou_fa_min = 0.85
 iou_ta_min = 0.80
+# A(digits123): 印刷数字 1/2/3 のパッチ照合（文字認識ではなく印刷様式部品の位置合わせ）。以下は設計 §1.8b の暫定値・校正待ち
+s_digit = 0.6                  # A(digits123): パッチ照合 TM_CCOEFF_NORMED の採用下限（実測 c1: 1.0 / c2: 0.85〜0.92 / c3: 0.82〜0.92）
+digit_margin_min = 0.05        # A(digits123): 各位置で「期待する数字のパッチ」が3枚の中で最大であるための、2位との差の下限〔暫定〕。s_digit だけでは数字どうしの照合値（実測 0.64〜0.69）がしきい値を超えるため、順序 1→2→3 の判定に必要
+digit_pitch_tol = 0.15         # A(digits123): 数字間隔が期待ピッチ(anchor.pitch)から外れてよい割合
+digit_xshift_h = 0.5           # A(digits123): x 中心の平均からのずれの上限（数字の高さに対する倍率）
+digit_gap_ratio_max = 1.2      # A(digits123): 隣り合う2つの間隔の比の上限
+digit_nms_px = 7               # A(digits123): 極大の非極大抑制の半径(px)
+digit_max_peaks = 120          # A(digits123): 1パッチあたりの極大数の上限（超えたら F_ANCHOR_MULTIPLE）
 
 [mask]                         # S7
 pad_x_min_px = 12
@@ -116,6 +124,7 @@ inside_min_dist_px = 6.0       # V1: 正規化座標での内側距離
 field_iou_min = 0.70           # V1: マスク多角形と field_rect の IoU
 card_corner_dist_ratio = 0.01  # V4: 対角線長に対する比
 redetect_erode_px = 3          # V4: マスク内を侵食してから Canny を数える
+digit_absent_max = 0.3         # V4 / A(digits123): マスク領域内での数字パッチ照合の上限〔設計§3 V4 の暫定値・校正待ち〕。これ未満なら痕跡なし
 
 [calibrate]                    # template-build（設計書 5.4 C1）
 min_samples = 5                # 様式ごとのサンプル数。これ未満はエラー（--allow-fewer で明示的に許可）

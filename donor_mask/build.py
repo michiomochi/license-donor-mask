@@ -28,7 +28,7 @@ from . import layout
 from .config import ConfigError
 from .geom import rect_area
 from .mask import base_pads, padded
-from .template import _validate_cues_and_anchor, load_templates
+from .template import _validate_cues_and_anchor, _validate_protected_gap, load_templates
 
 META_KEYS = ("field_rect", "anchor_type", "anchor", "required_cues", "protected_rects", "ignore_rects",
              "window_expand", "expected_mask_area", "note", "f_rules")
@@ -129,7 +129,9 @@ def build_template(samples, out_dir, cfg, *, template_id, label="back", kind="po
             "n_samples": len(imgs), "min_samples_required": ms, "min_samples_met": bool(met),
             "align_correlations": [round(c, 4) for c in ccs],
             "note": meta.get("note", "")}
-    _validate_cues_and_anchor(template_id, full)  # 書き出す前にローダーと同じ規則で落とす
+    if kind == "positive":
+        _validate_cues_and_anchor(template_id, full)   # 書き出す前にローダーと同じ規則で落とす
+        _validate_protected_gap(template_id, full, cfg)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for name, arr in (("ruling.png", ruling), ("print.png", print_map)):

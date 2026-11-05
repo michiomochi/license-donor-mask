@@ -17,6 +17,7 @@ import numpy as np
 
 from . import layout
 from .config import ConfigError
+from .geom import rect_inter
 
 
 @dataclass
@@ -29,6 +30,7 @@ class Template:
     print_map: np.ndarray | None
     ignore_rects: list = field(default_factory=list)
     sig: np.ndarray | None = None
+    digit_patches: list = field(default_factory=list)   # anchor_type="digits123" の数字パッチ（グレースケール）
 
     @property
     def positive(self) -> bool:
@@ -46,39 +48,125 @@ def _read_png(p: Path):
 
 
 CUES = ("T", "F", "A")
-ANCHOR_TYPES = ("box3", "circle3", "none")
+ANCHOR_TYPES = ("digits123", "box3", "circle3", "none")
 # f_rules の1本の線分のバンド幅の上限(px)。バンドを広げると F が弱まる（しきい値を緩めるのと同じ）ため。現行の最大は v0 の 17px
 MAX_RULE_BAND_PX = 20
+# digits123: パッチは数字の外接矩形にこの px の余白を足して切る（anchor.margin_px の既定）
+DIGIT_MARGIN_DEFAULT = 5
 
 
 def _validate_cues_and_anchor(name: str, meta: dict):
-    """required_cues と anchor_type の整合。
+    """required_cues と anchor_type の整合（設計 §1.8a の最小構成。オプションで外せない）。
 
-    - `required_cues` に F も A も入っていないテンプレート（= T だけ）は拒否する。T はテンプレートの
-      位置そのものなので、それだけで塗ると「位置合わせが合っているか」を独立に確かめない経路になる。
+    - 最小構成は「T ＋ 画像から測った手がかり2つ以上、うち1つは局所構造 A」。T 以外の手がかりは F と A
+      の2つだけなので、結局 T・F・A の全部。T だけ・T＋F・T＋A は拒否する。T はテンプレートの位置そのもので、
+      それだけ（または F か A のどちらか1つだけ）で塗ると「位置合わせが合っているか」を独立に確かめない経路になる。
       実様式でアンカーが合わないときの逃げ道にしない。
-    - `anchor_type = "none"` は「印刷された選択肢マークが実在しない様式」を表す。このとき A は必須にできない。
+    - `anchor_type = "none"` は「A に使える局所構造が無い」を表すので、上の最小構成を満たせない（常に拒否）。
+    - `digits123` は印刷数字 1/2/3 のパッチ（anchor.patches）。□/○の `side` は要求しない。
+      box3 / circle3 は合成テスト用（実様式には□/○の印が無い）。
     """
     cues = meta["required_cues"]
     if not isinstance(cues, list) or not cues or any(c not in CUES for c in cues):
         raise ConfigError(f"テンプレート {name}: required_cues は {list(CUES)} の空でない部分集合であること: {cues!r}")
-    if not ({"F", "A"} & set(cues)):
-        raise ConfigError(f"テンプレート {name}: required_cues に F か A を含めること"
-                          f"（T だけのテンプレートはテンプレート位置だけで塗る経路になるため不可）: {cues!r}")
     at = meta["anchor_type"]
     if at not in ANCHOR_TYPES:
         raise ConfigError(f"テンプレート {name}: anchor_type は {list(ANCHOR_TYPES)} のいずれか: {at!r}")
     if at == "none":
-        if "A" in cues:
-            raise ConfigError(f"テンプレート {name}: anchor_type=\"none\" のとき required_cues に A は入れられません")
-        return
+        raise ConfigError(f"テンプレート {name}: anchor_type=\"none\" では局所構造 A を要求できないため、"
+                          f"§1.8a の最小構成（T＋画像から測った手がかり2つ以上、うち1つは局所構造 A）を満たせません"
+                          f"（T だけ、または T＋F だけのテンプレートになるため不可）: 現状 required_cues={cues!r}。"
+                          f"anchor_type=\"digits123\" などの局所構造を定義してください")
+    measured = {"F", "A"} & set(cues)
+    if "T" not in cues or len(measured) < 2:
+        raise ConfigError(f"テンプレート {name}: required_cues が §1.8a の最小構成（T＋画像から測った手がかり2つ以上、"
+                          f"うち1つは局所構造 A）を満たさない（T だけ、または T＋手がかり1つでは、テンプレート位置頼みの"
+                          f"塗りになるため不可）: 現状 {cues!r}")
     a = meta["anchor"]
-    if not isinstance(a, dict) or any(k not in a for k in ("side", "pitch", "centers")):
-        raise ConfigError(f"テンプレート {name}: anchor には side / pitch / centers が必要")
-    if not isinstance(a["centers"], list) or len(a["centers"]) != 3:
-        raise ConfigError(f"テンプレート {name}: anchor.centers は3点")
-    if float(a["side"]) <= 0 or float(a["pitch"]) <= 0:
-        raise ConfigError(f"テンプレート {name}: anchor.side / anchor.pitch は正")
+    if not isinstance(a, dict):
+        raise ConfigError(f"テンプレート {name}: anchor はオブジェクトであること（anchor_type={at}）")
+    keys = ("patches", "pitch", "centers") if at == "digits123" else ("side", "pitch", "centers")
+    if any(k not in a for k in keys):
+        raise ConfigError(f"テンプレート {name}: anchor_type={at} の anchor には {' / '.join(keys)} が必要")
+    if not isinstance(a["centers"], list) or len(a["centers"]) != 3 or not all(_num_pair(c) for c in a["centers"]):
+        raise ConfigError(f"テンプレート {name}: anchor.centers は [x, y] の3点")
+    if not _is_num(a["pitch"]) or float(a["pitch"]) <= 0:
+        raise ConfigError(f"テンプレート {name}: anchor.pitch は正の数")
+    if at == "digits123":
+        pt = a["patches"]
+        if not isinstance(pt, list) or len(pt) != 3 or not all(isinstance(x, str) and x for x in pt):
+            raise ConfigError(f"テンプレート {name}: anchor.patches は画像ファイル名の文字列3つ（数字 1/2/3 の順）: {pt!r}")
+        m = a.get("margin_px", DIGIT_MARGIN_DEFAULT)
+        if not _is_num(m) or float(m) < 0:
+            raise ConfigError(f"テンプレート {name}: anchor.margin_px は 0 以上の数: {m!r}")
+    elif not _is_num(a["side"]) or float(a["side"]) <= 0:
+        raise ConfigError(f"テンプレート {name}: anchor.side は正の数")
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _fmt(v: float) -> str:
+    return f"{v:g}"
+
+
+def _validate_protected_gap(name: str, meta: dict, cfg):
+    """設計 §1.8b: field_rect と protected_rects の隙間が S7 の余白規則を満たせること。
+
+    S7 は保護領域と向かい合う辺の余白を縮めて、R から最低 `protected_min_gap_px` 残し、保護領域との間に
+    `protected_clear_px` 空ける。隙間がその和より小さいテンプレートは、どんな入力でも `M_PROTECTED_CONFLICT`
+    になる（または元画像の膨張が保護領域を塗る）ので、ロード時に拒否する。値は config から計算する。
+    向かい合う辺の判定: 左右は y 範囲が重なるときだけ、上下は x 範囲が重なるときだけ。
+    """
+    fr = tuple(float(v) for v in meta["field_rect"])
+    need = float(cfg.mask.protected_min_gap_px) + float(cfg.mask.protected_clear_px)
+    for i, p in enumerate(meta["protected_rects"]):
+        p = tuple(float(v) for v in p)
+        if rect_inter(fr, p) > 0:
+            raise ConfigError(f"テンプレート {name}: protected_rects[{i}] {list(p)} が field_rect {list(fr)} と重なっています"
+                              f"（保護領域は欄に食い込めない）")
+        y_overlap = min(p[3], fr[3]) > max(p[1], fr[1])
+        x_overlap = min(p[2], fr[2]) > max(p[0], fr[0])
+        pairs = []   # (protected の辺, 欄の辺, 隙間)
+        if y_overlap and p[2] <= fr[0]:
+            pairs.append(("右辺", "左辺", fr[0] - p[2]))
+        if y_overlap and p[0] >= fr[2]:
+            pairs.append(("左辺", "右辺", p[0] - fr[2]))
+        if x_overlap and p[3] <= fr[1]:
+            pairs.append(("下辺", "上辺", fr[1] - p[3]))
+        if x_overlap and p[1] >= fr[3]:
+            pairs.append(("上辺", "下辺", p[1] - fr[3]))
+        for pside, fside, gap in pairs:
+            if gap < need:
+                raise ConfigError(
+                    f"テンプレート {name}: protected_rects[{i}] の{pside}と field_rect の{fside}の隙間が足りません: "
+                    f"実測 {_fmt(gap)}px < 必要 {_fmt(need)}px（[mask] protected_min_gap_px={_fmt(float(cfg.mask.protected_min_gap_px))} "
+                    f"+ protected_clear_px={_fmt(float(cfg.mask.protected_clear_px))}）")
+
+
+def _read_digit_patches(d: Path, name: str, meta: dict) -> list:
+    """digits123 の数字パッチ（グレースケール）を読む。無い・読めない・空は ConfigError。
+
+    これは文字認識ではなく、印刷様式部品（数字 1/2/3 の字形）の位置合わせ用の画像。
+    """
+    a = meta["anchor"]
+    margin = int(round(float(a.get("margin_px", DIGIT_MARGIN_DEFAULT))))
+    out = []
+    for fn in a["patches"]:
+        if Path(fn).name != fn:
+            raise ConfigError(f"テンプレート {name}: anchor.patches はファイル名だけ（ディレクトリ区切り不可）: {fn!r}")
+        p = d / fn
+        if not p.is_file():
+            raise ConfigError(f"テンプレート {name}: 数字パッチ {fn} がありません: {p}")
+        try:
+            im = _read_png(p)
+        except (OSError, ValueError, cv2.error) as e:
+            raise ConfigError(f"テンプレート {name}: 数字パッチ {fn} を読めません: {e}") from e
+        if im.size == 0 or im.shape[0] <= 2 * margin or im.shape[1] <= 2 * margin:
+            raise ConfigError(f"テンプレート {name}: 数字パッチ {fn} が空か小さすぎます（余白 {margin}px の内側が無い）: {im.shape}")
+        out.append(im)
+    return out
 
 
 def _num_pair(v) -> bool:
@@ -156,9 +244,12 @@ def load_templates(root, cfg):
                 if k not in meta:
                     raise ConfigError(f"テンプレート {d.name}: キー {k} がありません")
             _validate_cues_and_anchor(d.name, meta)
+            _validate_protected_gap(d.name, meta, cfg)
             _validate_f_rules(d.name, meta, meta.get("size") or [W, H])
+        patches = _read_digit_patches(d, d.name, meta) \
+            if meta["kind"] == "positive" and meta["anchor_type"] == "digits123" else []
         t = Template(meta["id"], meta["kind"], meta["label"], meta, ruling, pm,
-                     [tuple(r) for r in meta.get("ignore_rects", [])])
+                     [tuple(r) for r in meta.get("ignore_rects", [])], digit_patches=patches)
         t.sig = layout.signature(ruling, t.ignore_rects, cfg)
         out.append(t)
     if not any(t.positive for t in out):

@@ -49,16 +49,31 @@ def test_metadata_is_the_measured_spec(real):
     assert m["window_expand"] == 0.1
 
 
-def test_anchor_is_none_and_cues_stay_fail_closed(real):
-    """実様式に印刷された印（A）は無い。T だけは不可なので required_cues は F を持つ。
-    F は閉じた枠ではなく罫線の線分（f_rules）の一致で判定する（T だけで塗る経路は開かない）。"""
+def test_anchor_is_digits123_and_cues_are_the_minimum_set(real):
+    """実様式に印刷された□/○の印は無いが、印刷数字 1/2/3 が実在する（A = digits123）。
+    §1.8a の最小構成 T＋F＋A（A は局所構造）。F は閉じた枠ではなく罫線の線分（f_rules）の一致で判定する。"""
     m = real.meta
-    assert m["anchor_type"] == "none" and m["anchor"] is None
-    assert m["required_cues"] == ["T", "F"]
+    assert m["anchor_type"] == "digits123"
+    assert m["required_cues"] == ["T", "F", "A"]
+
+
+def test_digit_anchor_is_the_measured_one(real):
+    a = real.meta["anchor"]
+    assert a["patches"] == ["digit_1.png", "digit_2.png", "digit_3.png"] and a["margin_px"] == 5
+    assert a["centers"] == [[77.5, 372.5], [79.0, 402.0], [79.0, 432.0]]
+    assert a["pitch"] == 30.0 and "side" not in a
+    assert [p.shape for p in real.digit_patches] == [(29, 17), (30, 22), (30, 22)]   # (h, w)
+
+
+def test_protected_gap_is_12px_and_at_least_the_required_minimum(real, cfg):
+    """保護領域の下端 288 と欄の上端 300 の隙間 12px ≥ protected_min_gap_px + protected_clear_px（9px）。"""
+    assert real.meta["protected_rects"][0][3] == 288.0 and real.meta["field_rect"][1] == 300.0
+    gap = real.meta["field_rect"][1] - real.meta["protected_rects"][0][3]
+    assert gap == 12.0 >= cfg.mask.protected_min_gap_px + cfg.mask.protected_clear_px
 
 
 def test_declared_as_provisional(real):
-    """同一カード3撮影なので「様式ごとに5枚以上」を満たさない。暫定であることが JSON に出ていること。"""
+    """3枚は別カード（裏面の印刷様式は共通）なので「様式ごとに5枚以上」を満たさない。暫定であることが JSON に出ていること。"""
     m = real.meta
     assert m["n_samples"] == 3 and m["min_samples_required"] == 5
     assert m["min_samples_met"] is False
@@ -72,9 +87,10 @@ def test_expected_mask_area_is_derived_from_field_rect(real, cfg):
     assert real.meta["expected_mask_area"] == pytest.approx(rect_area(mask.padded(tuple(FIELD), pads)), abs=0.01)
 
 
-def test_only_three_files_are_committed(real):
-    """サンプル画像・切り出し・GT の JSON を入れていないこと。"""
-    assert sorted(p.name for p in DIR.iterdir()) == ["print.png", "ruling.png", "template.json"]
+def test_only_template_assets_are_committed(real):
+    """サンプル画像・切り出し・GT の JSON を入れていないこと。数字パッチ（digit_*.png）はテンプレート資産。"""
+    assert sorted(p.name for p in DIR.iterdir()) == ["digit_1.png", "digit_2.png", "digit_3.png",
+                                                       "print.png", "ruling.png", "template.json"]
     assert sorted(json.loads((DIR / "template.json").read_text(encoding="utf-8"))) == sorted(real.meta)
 
 
@@ -91,6 +107,11 @@ def test_protected_rects_exclude_the_top_ruling_of_the_field(real):
     top_rule_y0 = F_RULES["h_lines"][0]["y"][0]
     assert all(r[3] < top_rule_y0 for r in real.meta["protected_rects"])
     assert "上罫線" in real.meta["note"]
+
+
+def test_note_states_digits123_and_the_design_value_of_y0(real):
+    n = real.meta["note"]
+    assert "digits123" in n and "罫線込みの和集合ではない" in n and "n=3" in n
 
 
 def test_no_ruling_frame_can_satisfy_f(real, cfg):

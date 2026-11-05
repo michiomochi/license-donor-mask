@@ -1,7 +1,8 @@
 """S6 欄の特定: 独立した3つの手がかり T（テンプレート位置）/ F（罫線の枠）/ A（選択肢の印の3連）。
 
 全て位置合わせ済みのテンプレート座標系（1011x638）で行う。手がかり同士が一致しなければ review。
-アンカーの種類は template.anchor_type で差し替える（box3 = 四角が縦に3つ / circle3 = 番号を○で囲む様式の候補）。
+アンカーの種類は template.anchor_type で差し替える（digits123 = 印刷数字 1/2/3 のパッチ照合＝実様式 /
+box3 = 四角が縦に3つ・circle3 = 番号を○で囲む様式の候補＝合成テスト用）。
 """
 from __future__ import annotations
 
@@ -183,6 +184,93 @@ def find_triples(singles, expected_pitch: float, cfg):
     return res
 
 
+def digit_peaks(gray: np.ndarray, patches, win, cfg):
+    """A(digits123): 探索窓の中で、数字パッチごとに TM_CCOEFF_NORMED の極大を貪欲に取る。
+
+    これは文字認識ではなく、印刷様式部品（数字 1/2/3 の字形）の位置合わせ。極大は値が `s_digit` 以上のものを
+    大きい順に取り、取った位置の周囲 ±`digit_nms_px` を潰す（非極大抑制）。1パッチあたり `digit_max_peaks`+1 個
+    まで取る（上限超過を検出できるように 1 つ多く取る）。戻りはパッチごとのリスト。要素は
+    {"cx","cy","rect","value"}（rect はマッチしたパッチ全体の矩形、cx/cy はその中心。いずれもテンプレート座標）。
+    """
+    f = cfg.field
+    x0, y0, x1, y1 = [int(round(v)) for v in win]
+    crop = layout.to_gray(gray)[y0:y1, x0:x1].astype(np.float32)
+    nms = int(f.digit_nms_px)
+    limit = int(f.digit_max_peaks) + 1
+    out = []
+    for patch in patches:
+        ph, pw = patch.shape[:2]
+        peaks = []
+        if crop.shape[0] >= ph and crop.shape[1] >= pw:
+            res = cv2.matchTemplate(crop, patch.astype(np.float32), cv2.TM_CCOEFF_NORMED)
+            res = np.nan_to_num(res, nan=-2.0, posinf=-2.0, neginf=-2.0)
+            while len(peaks) < limit:
+                _mn, mx, _ml, loc = cv2.minMaxLoc(res)
+                if mx < f.s_digit:
+                    break
+                lx, ly = loc
+                peaks.append({"cx": x0 + lx + pw / 2.0, "cy": y0 + ly + ph / 2.0,
+                              "rect": (x0 + lx, y0 + ly, x0 + lx + pw, y0 + ly + ph), "value": float(mx)})
+                res[max(0, ly - nms):ly + nms + 1, max(0, lx - nms):lx + nms + 1] = -2.0
+        out.append(peaks)
+    return out
+
+
+def find_digit_triples(peaks, anchor: dict, digit_h: float, cfg):
+    """数字 1→2→3 の3連。条件（全部 AND）: y が昇順・x 中心の平均からの最大ずれ ≤ digit_h*digit_xshift_h・
+    2つの間隔がどちらも期待ピッチの ±digit_pitch_tol・隣接間隔の比 ≤ digit_gap_ratio_max。"""
+    f = cfg.field
+    pitch = float(anchor["pitch"])
+    lo, hi = pitch * (1 - f.digit_pitch_tol), pitch * (1 + f.digit_pitch_tol)
+    xmax = digit_h * f.digit_xshift_h
+    res = []
+    for a in peaks[0]:
+        for b in peaks[1]:
+            g1 = b["cy"] - a["cy"]
+            if not (lo <= g1 <= hi):          # 昇順（g1 > 0）も lo > 0 で担保される
+                continue
+            for c in peaks[2]:
+                g2 = c["cy"] - b["cy"]
+                if not (lo <= g2 <= hi) or max(g1, g2) / min(g1, g2) > f.digit_gap_ratio_max:
+                    continue
+                cx = np.array([a["cx"], b["cx"], c["cx"]])
+                if float(np.abs(cx - cx.mean()).max()) > xmax:
+                    continue
+                res.append([a, b, c])
+    return res
+
+
+def digit_values_at(gray: np.ndarray, patches, cx: float, cy: float) -> list:
+    """指定した中心 (cx, cy) に各パッチを当てたときの TM_CCOEFF_NORMED の値を、パッチごとに返す。
+
+    パッチと同じ大きさだけ切り出して照合するので、値は1つに定まる（スライド探索しない）。範囲が画像外なら -1。
+    """
+    H, W = gray.shape[:2]
+    out = []
+    for p in patches:
+        ph, pw = p.shape[:2]
+        x0, y0 = int(round(cx - pw / 2.0)), int(round(cy - ph / 2.0))
+        if x0 < 0 or y0 < 0 or x0 + pw > W or y0 + ph > H:
+            out.append(-1.0)
+            continue
+        sub = gray[y0:y0 + ph, x0:x0 + pw].astype(np.float32)
+        r = cv2.matchTemplate(sub, p.astype(np.float32), cv2.TM_CCOEFF_NORMED)
+        out.append(float(np.nan_to_num(r[0, 0], nan=-1.0)))
+    return out
+
+
+def digit_order_margin(gray: np.ndarray, patches, triple) -> tuple:
+    """3連の各位置で「期待するパッチ（1/2/3 の順）」が3枚の中で最大かを見る。
+
+    戻りは (value_matrix, worst)。worst は「期待するパッチの値 − 他のパッチの最大値」の最小値。
+    正の値なら全位置で期待どおりの数字が最良。s_digit だけでは、数字どうしの照合値（実測 0.64〜0.69）が
+    しきい値を超えて逆順でも3連が成立するため、この差で順序を判定する。
+    """
+    mat = [digit_values_at(gray, patches, d["cx"], d["cy"]) for d in triple]
+    worst = min(row[i] - max(v for j, v in enumerate(row) if j != i) for i, row in enumerate(mat))
+    return mat, float(worst)
+
+
 def anchor_field_estimate(triple, tmpl: Template):
     """3連の実位置から（平行移動＋等方スケールの）相似変換を求め、field_rect を写す。"""
     exp = np.array(tmpl.meta["anchor"]["centers"], np.float64)
@@ -253,7 +341,44 @@ def locate_field(aligned_bgr, tmpl: Template, cfg):
     anchor = tmpl.meta.get("anchor") or {}
     x0, y0, x1, y1 = [int(round(v)) for v in win]
     met["A"] = {"skipped": "A" not in req, "anchor_type": tmpl.meta["anchor_type"]}
-    if "A" in req:
+    if "A" in req and tmpl.meta["anchor_type"] == "digits123":
+        # 印刷数字 1/2/3 のパッチ照合（文字認識ではない）。0組・2組以上・極大が多すぎる、は選ばず review
+        am = met["A"]
+        if len(tmpl.digit_patches) != 3:
+            raise ValueError(f"digits123 のテンプレートに数字パッチが3枚ありません: {len(tmpl.digit_patches)}")
+        am["s_digit"] = float(f.s_digit)
+        peaks = digit_peaks(aligned_bgr, tmpl.digit_patches, win, cfg)
+        am["peaks"] = [len(p) for p in peaks]
+        margin = float(anchor.get("margin_px", 5))
+        digit_h = float(np.mean([p.shape[0] for p in tmpl.digit_patches])) - 2 * margin
+        if max(am["peaks"]) > f.digit_max_peaks:
+            fail("F_ANCHOR_MULTIPLE", "digit_peaks", max(am["peaks"]), f.digit_max_peaks)
+        else:
+            triples = find_digit_triples(peaks, anchor, digit_h, cfg)
+            am["triples"] = len(triples)
+            if len(triples) == 0:
+                fail("F_ANCHOR_NOT_FOUND", "digit_triples", 0, 1)
+            elif len(triples) > 1:
+                fail("F_ANCHOR_MULTIPLE", "digit_triples", len(triples), 1)
+            else:
+                tr = triples[0]
+                gray = layout.to_gray(aligned_bgr)
+                # 「1→2→3 の順」を実質化する。s_digit（0.6）だけでは、数字どうしの照合値（実測 0.64〜0.69）が
+                # しきい値を超えるため、3つ並んだ数字なら逆順でも成立してしまう。各位置で「期待する数字の
+                # パッチが3枚の中で最大かつ2位との差 ≥ digit_margin_min」を要求する。
+                mat, worst = digit_order_margin(gray, tmpl.digit_patches, tr)
+                am["value_matrix"] = [[round(v, 4) for v in row] for row in mat]
+                am["discrimination"] = round(worst, 4)
+                if worst < f.digit_margin_min:
+                    fail("F_ANCHOR_NOT_FOUND", "digit_discrimination", round(worst, 4), f.digit_margin_min)
+                else:
+                    A_rect, sc = anchor_field_estimate(tr, tmpl)
+                    cues["A_boxes"] = [d["rect"] for d in tr]
+                    cues["A"] = A_rect
+                    am["scale"] = sc
+                    am["values"] = [d["value"] for d in tr]
+                    am["positions"] = [[d["cx"], d["cy"]] for d in tr]
+    elif "A" in req:
         singles = single_candidates(dark[y0:y1, x0:x1], float(anchor["side"]), tmpl.meta["anchor_type"], cfg, (x0, y0))
         met["A"]["singles"] = len(singles)
         if len(singles) > f.anchor_max_singles:
