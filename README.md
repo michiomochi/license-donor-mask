@@ -49,6 +49,14 @@
 | 各段で例外・shadow モード | `X_EXCEPTION`（握り潰して ok にしない）/ `X_SHADOW` |
 | 入力 | `E_FORMAT_UNSUPPORTED`（JPEG/PNG 以外）/ `E_TOO_LARGE`（50MP 超）/ `E_DECODE` |
 
+### 色味の地図によるフォールバック（S1）
+
+白〜クリーム色のカードを白い背景に置いた写真は、明度（Canny／大津）ではカード外形が取れません（素材写真で C_NO_CARD になった）。
+明度の3地図で候補が1つも取れなかったときだけ、Lab の a/b（色味）の大津2値化と色味の Canny を足してやり直します。
+先に取れた入力の経路は変わりません。足した地図も同じ幾何ゲート（面積・角度・遠近・アスペクト・辺の支持 0.85）と「2地図以上の一致」を通ります。
+辺の位置が数px揺れるので、このフォールバックで見つけたカードだけ、辺の支持の許容（`edge_support_tol_color_px`）と V4 のカード角の許容（`card_corner_dist_ratio_color`）を広げています。
+フォールバックを使ったかはログ `stages.S1.color_fallback` と、候補の `maps`（`lab_*`）に残ります。
+
 ### 塗った後の検証（全部 AND。`donor_mask/verify.py`）
 
 | | 内容 |

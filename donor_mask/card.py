@@ -11,7 +11,7 @@ import numpy as np
 from . import orient
 from .geom import (edge_lengths, interior_angles, order_quad, quad_area, quad_aspect, quad_diag, quad_dist)
 
-MAP_ORDER = ("canny", "otsu", "otsu_inv")
+MAP_ORDER = ("canny", "otsu", "otsu_inv", "lab_a", "lab_a_inv", "lab_b", "lab_b_inv")
 
 
 def boundary_points(cn, hull, tol: float = 2.0) -> np.ndarray:
@@ -167,71 +167,104 @@ def find_candidates(img, cfg, templates) -> dict:
     k = int(c.canny_dilate)
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     maps = [("canny", cv2.dilate(edges, np.ones((k, k), np.uint8))), ("otsu", th), ("otsu_inv", 255 - th)]
-    dist_to_edge = cv2.distanceTransform(255 - edges, cv2.DIST_L2, 3)
     img_area = float(sh * sw)
+    lab = cv2.cvtColor(small, cv2.COLOR_BGR2LAB)
+    # 色の地図（フォールバック用）: 白〜クリーム色のカードを白い背景に置くと明度ではほぼ分離できない（素材写真）。
+    # 明度の3地図で候補が1つも取れなかったときだけ、Lab の a/b（色味）の大津2値化と色味の Canny を足してやり直す。
+    # 先に取れた入力は今までと同じ経路。足した地図も同じ幾何ゲートと「2地図以上の一致」を通る。
+    color_maps = []
+    cedges = np.zeros_like(edges)
+    for nm, ch in (("lab_a", lab[:, :, 1]), ("lab_b", lab[:, :, 2])):
+        chb = cv2.GaussianBlur(ch, (5, 5), 0)
+        _, cth = cv2.threshold(chb, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        color_maps += [(nm, cth), (nm + "_inv", 255 - cth)]
+        cedges |= cv2.Canny(chb, int(c.canny_color_low), int(c.canny_color_high))
 
-    passed, rejected = [], {}
+    def scan(maps_, edge_map, cfg_):
+        dist_to_edge = cv2.distanceTransform(255 - edge_map, cv2.DIST_L2, 3)
+        passed, rejected = [], {}
 
-    def rej(code):
-        rejected[code] = rejected.get(code, 0) + 1
+        def rej(code):
+            rejected[code] = rejected.get(code, 0) + 1
 
-    n_outline = 0
-    for name, mp in maps:
-        cnts, _ = cv2.findContours(mp, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
-        for cn in cnts:
-            if cv2.contourArea(cn) < c.min_area_ratio * img_area * 0.8:
-                continue
-            hull = cv2.convexHull(cn)
-            peri = cv2.arcLength(hull, True)
-            quad = None
-            for eps in c.approx_eps:
-                ap = cv2.approxPolyDP(hull, eps * peri, True)
-                if len(ap) == 4:
-                    quad = ap.reshape(4, 2).astype(np.float64)
+        n_outline = 0
+        for name, mp in maps_:
+            cnts, _ = cv2.findContours(mp, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+            for cn in cnts:
+                if cv2.contourArea(cn) < c.min_area_ratio * img_area * 0.8:
+                    continue
+                hull = cv2.convexHull(cn)
+                peri = cv2.arcLength(hull, True)
+                quad = None
+                for eps in c.approx_eps:
+                    ap = cv2.approxPolyDP(hull, eps * peri, True)
+                    if len(ap) == 4:
+                        quad = ap.reshape(4, 2).astype(np.float64)
+                        break
+                if quad is None:
+                    rej("C_NOT_QUAD")
+                    continue
+                quad = order_quad(quad)
+                band = c.corner_refine_band * quad_diag(quad)
+                quad, _refined = refine_corners(quad, boundary_points(cn, hull), band, int(c.corner_refine_min_points))
+                quad = order_quad(quad)
+                if is_frame_outline(quad, small.shape, cfg):
+                    # 画像全体の輪郭。候補にも幾何判定にも回さず数だけ数える。候補が1つも取れなかったときだけ、
+                    # 下で罫線照合して C_FRAME_FILLED にするか決める（アスペクトだけでは判定しない）
+                    n_outline += 1
+                    continue
+                code, met = geometry_check(quad, small.shape, dist_to_edge, cfg_)
+                if code:
+                    rej(code)
+                    continue
+                passed.append((name, quad, met))
+        return passed, rejected, n_outline
+
+    def consensus(passed, rejected):
+        # マップ間の合意: 同じ四角形（4角の距離が対角線長の consensus_dist_ratio 以内）が複数マップで見つかること
+        clusters = []
+        for name, quad, met in passed:
+            for cl in clusters:
+                if quad_dist(cl["quad0"], quad) <= c.consensus_dist_ratio * quad_diag(quad):
+                    cl["members"].append((name, quad, met))
                     break
-            if quad is None:
-                rej("C_NOT_QUAD")
-                continue
-            quad = order_quad(quad)
-            band = c.corner_refine_band * quad_diag(quad)
-            quad, _refined = refine_corners(quad, boundary_points(cn, hull), band, int(c.corner_refine_min_points))
-            quad = order_quad(quad)
-            if is_frame_outline(quad, small.shape, cfg):
-                # 画像全体の輪郭。候補にも幾何判定にも回さず数だけ数える。候補が1つも取れなかったときだけ、
-                # 下で罫線照合して C_FRAME_FILLED にするか決める（アスペクトだけでは判定しない）
-                n_outline += 1
-                continue
-            code, met = geometry_check(quad, small.shape, dist_to_edge, cfg)
-            if code:
-                rej(code)
-                continue
-            passed.append((name, quad, met))
-
-    # マップ間の合意: 同じ四角形（4角の距離が対角線長の consensus_dist_ratio 以内）が複数マップで見つかること
-    clusters = []
-    for name, quad, met in passed:
+            else:
+                clusters.append({"quad0": quad, "members": [(name, quad, met)]})
+        out = []
         for cl in clusters:
-            if quad_dist(cl["quad0"], quad) <= c.consensus_dist_ratio * quad_diag(quad):
-                cl["members"].append((name, quad, met))
-                break
+            names = sorted({m[0] for m in cl["members"]}, key=MAP_ORDER.index)
+            if len(names) < c.consensus_min_maps:
+                rejected["C_NO_CONSENSUS"] = rejected.get("C_NO_CONSENSUS", 0) + 1
+                continue
+            base = cl["members"][0][1]
+            aligned = []
+            for _n, q, _m in cl["members"]:
+                k0 = int(np.argmin([np.linalg.norm(np.roll(q, -r, axis=0) - base, axis=1).max() for r in range(4)]))
+                aligned.append(np.roll(q, -k0, axis=0))
+            quad = order_quad(np.mean(aligned, axis=0) / s)  # 元画像スケールへ
+            met = dict(cl["members"][0][2])
+            met["maps"] = names
+            out.append({"quad": quad, "maps": names, "metrics": met})
+        out.sort(key=lambda d: (round(float(d["quad"][:, 1].mean()), 0), round(float(d["quad"][:, 0].mean()), 0)))
+        return out
+
+    base_maps = list(maps)
+    passed, rejected, n_outline = scan(base_maps, edges, cfg)
+    cands = consensus(passed, rejected)
+    color_pass, color_rejected = False, None
+    if not cands:
+        # フォールバック: 色の地図・色味の辺の支持を足してやり直す。辺の許容だけ edge_support_tol_color_px に広げる
+        # （明度差が小さい辺は Canny の位置が揺れる）。edge_support_min と他の幾何ゲートは同じ
+        color_pass = True
+        cfg_c = cfg.override("card", edge_support_tol_px=float(c.edge_support_tol_color_px))
+        passed2, rejected2, n_outline2 = scan(base_maps + color_maps, edges | cedges, cfg_c)
+        cands2 = consensus(passed2, rejected2)
+        if cands2:
+            passed, rejected, n_outline, cands = passed2, rejected2, n_outline2, cands2
         else:
-            clusters.append({"quad0": quad, "members": [(name, quad, met)]})
-    cands = []
-    for cl in clusters:
-        names = sorted({m[0] for m in cl["members"]}, key=MAP_ORDER.index)
-        if len(names) < c.consensus_min_maps:
-            rej("C_NO_CONSENSUS")
-            continue
-        base = cl["members"][0][1]
-        aligned = []
-        for _n, q, _m in cl["members"]:
-            k0 = int(np.argmin([np.linalg.norm(np.roll(q, -r, axis=0) - base, axis=1).max() for r in range(4)]))
-            aligned.append(np.roll(q, -k0, axis=0))
-        quad = order_quad(np.mean(aligned, axis=0) / s)  # 元画像スケールへ
-        met = dict(cl["members"][0][2])
-        met["maps"] = names
-        cands.append({"quad": quad, "maps": names, "metrics": met})
-    cands.sort(key=lambda d: (round(float(d["quad"][:, 1].mean()), 0), round(float(d["quad"][:, 0].mean()), 0)))
+            # 足しても取れなかった入力の理由は、今までどおり明度の3地図の棄却だけで出す（色の地図の棄却は混ぜない。
+            # 混ぜると小さなカード等の一次理由が C_AREA から C_PERSPECTIVE 等へ変わってしまう）。色側はログにだけ残す
+            color_rejected = rejected2
     if n_outline == 0:
         frame = {"status": "no_outline"}
     elif cands:
@@ -239,9 +272,9 @@ def find_candidates(img, cfg, templates) -> dict:
     else:
         frame = dict(is_frame_filled(img, templates, cfg), n_outline=n_outline)
         if frame["status"] == "filled":
-            rej("C_FRAME_FILLED")  # 「カードが枠いっぱい」＝再撮影（余白を残す）を案内する。フォールバックはしない
+            rejected["C_FRAME_FILLED"] = rejected.get("C_FRAME_FILLED", 0) + 1  # 「カードが枠いっぱい」＝再撮影（余白を残す）を案内する。フォールバックはしない
         elif frame["status"] == "no_templates":
-            rej("C_FRAME_UNVERIFIED")  # 照合できなかった。黙って True にも False にもしない
+            rejected["C_FRAME_UNVERIFIED"] = rejected.get("C_FRAME_UNVERIFIED", 0) + 1  # 照合できなかった。黙って True にも False にもしない
         # not_filled: 外枠は画像の縁でカードではない。コードは付けず、根拠は frame に残る
     return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed),
-            "frame_filled": frame}
+            "frame_filled": frame, "color_fallback": color_pass, "color_rejected": color_rejected}

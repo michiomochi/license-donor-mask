@@ -55,7 +55,8 @@ def s1_candidates(img, cfg, templates):
 def s1_log(res) -> dict:
     """S1 のログ。process_file と diagnose_file で同一にする（判定そのものは card にしか無い）。"""
     return {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in res["candidates"]],
-            "rejected": res["rejected"], "frame_filled": res["frame_filled"]}
+            "rejected": res["rejected"], "frame_filled": res["frame_filled"],
+            "color_fallback": res.get("color_fallback", False), "color_rejected": res.get("color_rejected")}
 
 
 def primary_reason(reasons: list) -> str | None:
@@ -313,6 +314,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             _fail("S7", rs)
         polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon, "fill_bgr": list(fill_bgr)}
@@ -636,6 +638,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         rect = r7[0]
         polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon,
