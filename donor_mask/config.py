@@ -57,7 +57,7 @@ class Config(Section):
 _REQUIRED = {
     "input": ["max_pixels", "min_card_long_edge_px"],
     "canvas": ["width", "height", "card_aspect"],
-    "card": ["work_long_edge", "canny_low", "canny_high", "canny_color_low", "canny_color_high", "edge_support_tol_color_px", "canny_dilate", "approx_eps", "min_area_ratio",
+    "card": ["work_long_edge", "canny_low", "canny_high", "grabcut_fallback", "grabcut_margin", "grabcut_seed_a", "grabcut_seed_b", "grabcut_iters", "canny_color_low", "canny_color_high", "edge_support_tol_color_px", "canny_dilate", "approx_eps", "min_area_ratio",
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
              "edge_support_min", "edge_support_tol_px", "border_margin_ratio", "border_margin_px",
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",

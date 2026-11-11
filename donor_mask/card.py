@@ -11,7 +11,53 @@ import numpy as np
 from . import orient
 from .geom import (edge_lengths, interior_angles, order_quad, quad_area, quad_aspect, quad_diag, quad_dist)
 
-MAP_ORDER = ("canny", "otsu", "otsu_inv", "lab_a", "lab_a_inv", "lab_b", "lab_b_inv")
+MAP_ORDER = ("canny", "otsu", "otsu_inv", "lab_a", "lab_a_inv", "lab_b", "lab_b_inv", "gc_a", "gc_b")
+
+
+def grabcut_map(small, seed_frac: float, margin: float, iters: int, grabcut_long_edge: int = 600):
+    """GrabCut の前景マスク（0/255）。画像の縁 margin（比）を確実な背景、中心の seed_frac（比）四方を確実な前景の種にして始める。
+
+    背景が机・床・手などで、明度も色味も大津で1本の閾値では分けられない写真向け（フォールバック専用）。
+    乱数を使わないので結果は毎回同じ。
+    """
+    h0, w0 = small.shape[:2]
+    # 作業解像度は 1200px だと GrabCut が約1秒かかる。外形の取得には 600px で足りるので縮めて計算し、マスクを元の大きさへ戻す
+    gs = min(1.0, float(grabcut_long_edge) / max(h0, w0))
+    if gs < 1.0:
+        small = cv2.resize(small, None, fx=gs, fy=gs, interpolation=cv2.INTER_AREA)
+    h, w = small.shape[:2]
+    # 色の種類が少ない画像（単色・2色の絵・白紙の枠など）では GMM が退化して GrabCut が極端に遅くなる（実測で数十秒）。
+    # 写真は量子化しても数百色ある。色が少なければ使わない（候補0件のまま = 従来どおり review）
+    q = (small >> 3).astype(np.int32)
+    if np.unique((q[..., 0] << 10) | (q[..., 1] << 5) | q[..., 2]).size < 64:
+        return np.zeros((h0, w0), np.uint8)
+    # 量子化では見えない微小な退化を避けるため、乱数を使わない微小な模様を足す（結果は毎回同じ）
+    yy, xx = np.indices(small.shape[:2])
+    pat = (((xx * 73856093) ^ (yy * 19349663)) % 5 - 2).astype(np.int32)  # 乱数を使わない決まった模様（-2〜2）
+    small = np.clip(small.astype(np.int32) + pat[..., None], 0, 255).astype(np.uint8)
+    mx, my = max(1, int(w * margin)), max(1, int(h * margin))
+    mask = np.full((h, w), cv2.GC_BGD, np.uint8)
+    mask[my:h - my, mx:w - mx] = cv2.GC_PR_BGD  # 枠の内側は「たぶん背景」から始め、中心だけを前景の種にする
+    cy0, cy1, cx0, cx1 = int(h * (0.5 - seed_frac / 2)), int(h * (0.5 + seed_frac / 2)), int(w * (0.5 - seed_frac / 2)), int(w * (0.5 + seed_frac / 2))
+    mask[cy0:cy1, cx0:cx1] = cv2.GC_FGD  # ユーザーが撮った写真は、カードが画像の中心付近にある前提（運用前提）
+    mask[my:h - my, mx:w - mx][mask[my:h - my, mx:w - mx] == cv2.GC_PR_BGD] = cv2.GC_PR_FGD
+    bgd = np.zeros((1, 65), np.float64)
+    fgd = np.zeros((1, 65), np.float64)
+    try:
+        cv2.setRNGSeed(0)  # GrabCut の初期クラスタリング(kmeans)は OpenCV 内部の乱数を使う。呼ぶたびに結果が変わらないよう固定する
+        cv2.grabCut(small, mask, None, bgd, fgd, int(iters), cv2.GC_INIT_WITH_MASK)
+    except cv2.error:
+        return np.zeros((h, w), np.uint8)
+    fg = np.where((mask == cv2.GC_FGD) | (mask == cv2.GC_PR_FGD), 255, 0).astype(np.uint8)
+    # 縁のはみ出し（影・指・机の模様の取り込み）は凸包の四角形を傾ける。カードの縁より十分細いものだけを開処理で落とす
+    r = max(3, int(round(min(h, w) * 0.025)))
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    fg = cv2.morphologyEx(fg, cv2.MORPH_CLOSE, k)
+    fg = cv2.morphologyEx(fg, cv2.MORPH_OPEN, k)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(fg)
+    if n > 1:
+        fg = np.where(lab == 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA])), 255, 0).astype(np.uint8)
+    return cv2.resize(fg, (w0, h0), interpolation=cv2.INTER_NEAREST) if gs < 1.0 else fg
 
 
 def boundary_points(cn, hull, tol: float = 2.0) -> np.ndarray:
@@ -265,6 +311,21 @@ def find_candidates(img, cfg, templates) -> dict:
             # 足しても取れなかった入力の理由は、今までどおり明度の3地図の棄却だけで出す（色の地図の棄却は混ぜない。
             # 混ぜると小さなカード等の一次理由が C_AREA から C_PERSPECTIVE 等へ変わってしまう）。色側はログにだけ残す
             color_rejected = rejected2
+    grabcut_pass, grabcut_rejected = False, None
+    if not cands and int(c.grabcut_fallback) == 1:
+        # 3段目のフォールバック: 背景が複雑（手持ち・机・床）で明度・色味の2値化では外形が取れないとき、GrabCut の前景を
+        # 地図として足す。前景の種の大きさを変えた2つの前景（gc_a/gc_b）が同じ四角形を返したときだけ候補になる。
+        # 幾何ゲート・辺の支持・S2/S3 の罫線照合・V1〜V7 は同じ（緩めない）
+        grabcut_pass = True
+        gmaps = [("gc_a", grabcut_map(small, float(c.grabcut_seed_a), float(c.grabcut_margin), int(c.grabcut_iters))),
+                 ("gc_b", grabcut_map(small, float(c.grabcut_seed_b), float(c.grabcut_margin), int(c.grabcut_iters)))]
+        cfg_g = cfg.override("card", edge_support_tol_px=float(c.edge_support_tol_color_px))
+        passed3, rejected3, n_outline3 = scan(gmaps, edges | cedges, cfg_g)
+        cands3 = consensus(passed3, rejected3)
+        if cands3:
+            passed, rejected, n_outline, cands = passed3, rejected3, n_outline3, cands3
+        else:
+            grabcut_rejected = rejected3
     if n_outline == 0:
         frame = {"status": "no_outline"}
     elif cands:
@@ -277,4 +338,5 @@ def find_candidates(img, cfg, templates) -> dict:
             rejected["C_FRAME_UNVERIFIED"] = rejected.get("C_FRAME_UNVERIFIED", 0) + 1  # 照合できなかった。黙って True にも False にもしない
         # not_filled: 外枠は画像の縁でカードではない。コードは付けず、根拠は frame に残る
     return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed),
-            "frame_filled": frame, "color_fallback": color_pass, "color_rejected": color_rejected}
+            "frame_filled": frame, "color_fallback": color_pass, "color_rejected": color_rejected,
+            "grabcut_fallback": grabcut_pass, "grabcut_rejected": grabcut_rejected}

@@ -56,7 +56,7 @@ def s1_log(res) -> dict:
     """S1 のログ。process_file と diagnose_file で同一にする（判定そのものは card にしか無い）。"""
     return {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in res["candidates"]],
             "rejected": res["rejected"], "frame_filled": res["frame_filled"],
-            "color_fallback": res.get("color_fallback", False), "color_rejected": res.get("color_rejected")}
+            "color_fallback": res.get("color_fallback", False), "color_rejected": res.get("color_rejected"), "grabcut_fallback": res.get("grabcut_fallback", False), "grabcut_rejected": res.get("grabcut_rejected")}
 
 
 def primary_reason(reasons: list) -> str | None:
