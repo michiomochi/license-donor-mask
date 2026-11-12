@@ -161,7 +161,7 @@ def _validate_mirror_gate(raw: dict):
     """§1.5c の鏡像ゲート M2・M3 は「無効にできない」。緩める設定は起動時に ConfigError。
 
     - M2（d_mirror ≥ mirror_margin）: 0 以下にできない
-    - M3（印刷数字の左右反転照合）: v2.1 の一部未実装なので `unimplemented` だけを許す。
+    - M3（印刷数字の左右反転照合）: v2.1 の一部未実装なので `unimplemented`（保留）と `digits23`（左右反転照合）だけを許す。
       黙って無効化する値（off / false / 0 など）は入れられない
     - 配置ファミリー family_iou も (0, 1] の外は不可
     """

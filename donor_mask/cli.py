@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 import cv2
-import numpy as np
 
 from . import aggregate, build, card, imgio, orient, pipeline, verify
 from .config import DEFAULT_CONFIG, DEFAULT_TEMPLATES, ConfigError, load_config

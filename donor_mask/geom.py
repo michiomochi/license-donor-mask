@@ -135,16 +135,3 @@ def polygon_mask(shape, poly, grow: int) -> np.ndarray:
     if grow > 0:
         m = cv2.dilate(m, np.ones((2 * grow + 1, 2 * grow + 1), np.uint8))
     return m.astype(bool)
-
-
-def r4(x):
-    """JSON 用の丸め（再現性のため桁を固定）。"""
-    if isinstance(x, (list, tuple)):
-        return [r4(v) for v in x]
-    if isinstance(x, np.ndarray):
-        return r4(x.tolist())
-    if isinstance(x, (np.floating, float)):
-        return round(float(x), 4)
-    if isinstance(x, (np.integer,)):
-        return int(x)
-    return x
