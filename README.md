@@ -157,6 +157,23 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 - `verify.py` 単体: 一様でない／欄外が1画素違う／位置がずれた画像をそれぞれ落とす。`verify.py` は `mask.py` / `pipeline.py` / `orient.py` を import しない。
 - 再現性・原本不変（sha256 と mtime）・既存出力の非上書き・入出力ディレクトリ検査・EXIF・アルファ付き PNG。
 
+### 撮影バリエーションでの評価（ok 率と誤検出）
+
+見本（正規化済みの空欄カード）から、**背景・傾き（遠近含む）・指の写り込み・縮小・ブレ**を固定シードで自動生成し、本番と同じ経路（`pipeline.process_file`）に通して、ok 率と**誤検出**（ok になったのに塗りが正しくない）を数えます。実行時に AI は使わず、パラメータの網は `tests/variation_gen.py` の `build_grid()` に固定（結果を見て調整しない・特定の画像向けの設定はない）。生成画像は一時ディレクトリに書いて評価後に消し、出力は件数と率だけです（画像・ファイル名・パスは出しません）。
+
+```bash
+python tools/eval_variations.py                  # 合成見本（SYNTHETIC_TEST）で全軸（約1分）
+python tools/eval_variations.py --axes tilt,blur --json
+python tools/eval_variations.py --samples ./norm_samples --template templates/real_back_v1   # 正規化済み(1011x638)の見本。欄・保護領域は template.json から
+pytest tests/test_variation_eval.py -s           # 生成・評価関数の検査 + 全グリッド（約1分。結果表を表示）
+```
+
+- 軸: `background`（8 種×傾き 0/8°）、`tilt`（±5〜30°・遠近）、`finger`（四辺から＋欄の上。肌色の楕円）、`shrink`（0.8〜0.2 倍、INTER_AREA）、`blur`（ガウス σ・直線ブレ）、`combo`（固定シードの複合 16 件）。計 70 件。
+- 誤検出（ok の件だけが対象。1 つでも該当すれば誤検出）: `misplaced`（GT の欄を 1px 侵食しても塗られていない画素がある＝塗り位置ずれ）/ `outside_card`（原本から変わった画素がカード四角形＋3px の外にある＝カード以外を塗る）/ `protected`（保護領域へ 2px を超えて食い込む）/ `overpaint`（変更画素数が GT の欄の 1.6 倍超）/ `not_fill_colour`（塗り色以外の変更）。review は取りこぼしの側で、理由コード別に数えます。
+- テストは `misplaced / outside_card / overpaint / not_fill_colour` が 0 件であること、保護領域への食い込みが 4px 以内であること、ok 率が回帰しないこと（全体 ≥ 0.6、`tilt` ≥ 0.9。目標値ではなく下限）を固定します。
+- 実測（合成見本 1 枚・既定設定・70 件）: ok 47 / review 23 / error 0（ok 率 0.671）。誤検出は `protected` の 6 件のみ（最大 2.87px の食い込み。縮小 0.6 倍以下や -30° の傾きなど）、位置ずれ・カード外塗りは 0。`finger` 軸は ok 率 0.2（`V_INK_OUTSIDE` / `F_ANCHOR_NOT_FOUND` / `F_FRAME_NOT_FOUND` / `M_INK_OVERFLOW` で review。fail-closed の側）。
+- **未解決（本番コードは変えていません）**: 保護領域への数 px の食い込みの原因は未特定です（元画像での grow 膨張が px 固定で、保護領域との隙間はカードの縮小に比例して縮むためと疑っていますが未検証）。
+
 ## 実画像での検証結果
 
 以下の2枚で試しました。**どちらも実物の免許証の写真ではなく、「記入例」「解説図」です**（個人情報は含まれません）。権利の都合でリポジトリには含めません。出典:
