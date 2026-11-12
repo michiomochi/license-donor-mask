@@ -222,7 +222,8 @@ def sift_candidates(img, cfg, templates):
         return [], log
     W, H = int(cfg.canvas.width), int(cfg.canvas.height)
     corners = np.array([[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1]], np.float64)
-    cfg_g = cfg.override("card", edge_support_min=0.0, border_margin_px=0.0, border_margin_ratio=0.0)  # 縁に接してよい（外へはみ出す＝カードが切れているものは落ちる）
+    ov = -float(c.sift_overshoot_ratio) * min(h0, w0)  # 負: 画像の外へこの割合だけはみ出す四角も許す（カードが画像端で切れている写真）
+    cfg_g = cfg.override("card", edge_support_min=0.0, border_margin_px=ov, border_margin_ratio=ov / max(1.0, min(h0, w0)))  # 縁に接してよい（外へはみ出す＝カードが切れているものは落ちる）
     out = []
     for t in templates:
         if not t.positive or t.print_map is None:
@@ -235,6 +236,13 @@ def sift_candidates(img, cfg, templates):
         log["tried"] += 1
         m = cv2.BFMatcher().knnMatch(dt, di, k=2)
         good = [a for a, b in (x for x in m if len(x) == 2) if a.distance < float(c.sift_ratio) * b.distance]
+        # 1つの画像上の点へ複数のテンプレート点が対応する重複（繰り返し模様で起きる）は、射影が1点に潰れる縮退解の元になる。
+        # 画像側の点ごとに距離が最小の対応だけ残す
+        best_by_train = {}
+        for a in good:
+            if a.trainIdx not in best_by_train or a.distance < best_by_train[a.trainIdx].distance:
+                best_by_train[a.trainIdx] = a
+        good = list(best_by_train.values())
         if len(good) < 8:
             continue
         cv2.setRNGSeed(0)  # RANSAC の乱数を固定（同じ入力は同じ結果）

@@ -14,11 +14,12 @@ card_aspect = 1.585
 work_long_edge = 1200
 canny_low = 40
 sift_fallback = 3
+sift_overshoot_ratio = 0.06   # SIFT の四角が画像の外へはみ出してよい割合（短辺比）。既定 0
 sift_work_long_edge = 1000
 sift_n_features = 4000
 sift_ratio = 0.8
 sift_ransac_px = 6.0
-sift_min_inliers = 28
+sift_min_inliers = 24
 canny_high = 120
 canny_dilate = 3
 edge_support_tol_color_px = 5.0 # 同フォールバックでの辺の支持の許容（明度差が小さい辺は Canny の位置が揺れる）
@@ -149,6 +150,7 @@ open_px = 2                    # インク画素のノイズ除去（モルフ�
 border_ignore_px = 6           # 正規化キャンバスの縁（カード縁・背景の写り込み）はインクに数えない
 ink_min_len_px = 24            # V7: マスク外で拾う連結成分の外接矩形の長辺の下限（正規化座標で約2mm）
 ink_edge_margin_px = 6         # V7: カード縁からこの px 以内にかかる成分は数えない（背景の写り込み。増やすと検出が緩む）
+ink_thin_line_px = 8            # V7: 短辺がこの px 以下の細長い成分（カード縁・罫線）は数えない。既定 0=無効
 ink_corner_ignore_px = 48      # V7: 四隅のこの px 四方に入る成分は数えない（丸い角の外側の背景・紙の縁が写り込む帯。実物の角の半径は約3mm=35px、紙台紙では角の縁が長い縞になる）
 
 [verify]

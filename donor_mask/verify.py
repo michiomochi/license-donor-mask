@@ -240,6 +240,8 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
         longest = max(longest, long_px)
         if long_px < lo:
             continue
+        if int(k.ink_thin_line_px) > 0 and min(w, h) <= int(k.ink_thin_line_px):
+            continue  # 幅が数px以下の細長い線（カード縁・罫線）は文字ではないので数えない（0=無効）
         if x < m or y < m or x + w > W - m or y + h > H - m:  # カード縁の成分は数えない
             continue
         if c > 0 and any(x < cx1 and x + w > cx0 and y < cy1 and y + h > cy0

@@ -57,7 +57,7 @@ class Config(Section):
 _REQUIRED = {
     "input": ["max_pixels", "min_card_long_edge_px"],
     "canvas": ["width", "height", "card_aspect"],
-    "card": ["work_long_edge", "canny_low", "canny_high", "grabcut_fallback", "sift_fallback", "sift_work_long_edge", "sift_n_features", "sift_ratio", "sift_ransac_px", "sift_min_inliers", "grabcut_margin", "grabcut_seed_a", "grabcut_seed_b", "grabcut_iters", "canny_color_low", "canny_color_high", "edge_support_tol_color_px", "canny_dilate", "approx_eps", "min_area_ratio",
+    "card": ["work_long_edge", "canny_low", "canny_high", "grabcut_fallback", "sift_fallback", "sift_overshoot_ratio", "sift_work_long_edge", "sift_n_features", "sift_ratio", "sift_ransac_px", "sift_min_inliers", "grabcut_margin", "grabcut_seed_a", "grabcut_seed_b", "grabcut_iters", "canny_color_low", "canny_color_high", "edge_support_tol_color_px", "canny_dilate", "approx_eps", "min_area_ratio",
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
              "edge_support_min", "edge_support_tol_px", "border_margin_ratio", "border_margin_px",
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",
@@ -77,7 +77,7 @@ _REQUIRED = {
               "digit_max_peaks"],
     "mask": ["clip_card_inset_px", "pad_x_min_px", "pad_x_ratio", "pad_y_min_px", "pad_y_ratio", "pad_cap_px",
              "protected_min_gap_px", "protected_clear_px", "area_ratio_min", "area_ratio_max", "grow_px"],
-    "ink": ["tolerate_l", "tolerate_t", "tolerate_r", "tolerate_b", "expand_hits_protected_ok", "ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
+    "ink": ["ink_thin_line_px", "tolerate_l", "tolerate_t", "tolerate_r", "tolerate_b", "expand_hits_protected_ok", "ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
             "print_dilate_px", "open_px", "border_ignore_px", "ink_min_len_px", "ink_edge_margin_px",
             "ink_corner_ignore_px"],
     "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "card_corner_dist_ratio_color", "card_corner_dist_ratio_sift", "v4_card_missing_ok", "redetect_erode_px",
