@@ -1,0 +1,17 @@
+[project]
+name = "license-donor-mask"
+version = "0.1.0"
+description = "運転免許証の裏面の臓器提供意思表示欄を黒塗りするツール（AI・外部送信なし）"
+requires-python = ">=3.11"
+license = { file = "LICENSE" }
+# 本番処理の依存はこの 2 つだけ。ML モデル・OCR・クラウド API・ネットワークライブラリは使わない
+dependencies = [
+    "opencv-python-headless==5.0.0.93",
+    "numpy==2.4.6",
+]
+
+[dependency-groups]
+dev = ["pytest==9.2.0"]
+
+[tool.uv]
+package = false

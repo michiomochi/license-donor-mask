@@ -78,35 +78,35 @@ Python 3.11 以上。
 
 ```bash
 python3.11 -m venv .venv && . .venv/bin/activate     # または: uv venv --python 3.11
-pip install -r requirements-dev.txt                    # 本番依存は opencv-python-headless と numpy のみ
+uv sync                    # 本番依存は opencv-python-headless と numpy のみ
 
 # マスク（ファイル1つ、またはディレクトリ直下の jpg/jpeg/png を一括。ソート順）
-python -m donor_mask run --in ./inbox --out ./out                 # 既定: 黒
-python -m donor_mask run --in ./inbox --out ./out --fill white
-python -m donor_mask run --in ./inbox --out ./out --shadow        # ok 相当でも ok/ に出さず全件 review（提案を画像に描く）
+uv run python -m donor_mask run --in ./inbox --out ./out                 # 既定: 黒
+uv run python -m donor_mask run --in ./inbox --out ./out --fill white
+uv run python -m donor_mask run --in ./inbox --out ./out --shadow        # ok 相当でも ok/ に出さず全件 review（提案を画像に描く）
 
 # 診断: どの段がどの値で落ちるかを全段分見る（校正用）。通常の run とは別の --out を使い、--shadow とは同時に指定できない
-python -m donor_mask run --diagnostic --in ./inbox --out ./diag
+uv run python -m donor_mask run --diagnostic --in ./inbox --out ./diag
 #   [diag] c1_pad.png S0=pass S1=pass S2=pass S3=pass S4=pass S5=pass S6=pass S7=pass S8=pass -> review
 #   status は常に review（全段 pass でも ok にしない）。ok/ にも review/ にも何も書かず、書くのは logs/<job_id>.json だけ。
 #   各段の fail を記録するだけで先の段へ進み、全段のメトリクスと全段の理由コードを残す。前段の結果が無くて計算できない段は
 #   {"skipped": "<前提段>"}（値は推測しない）。終了コードは 3。ログの "mode" は "diagnostic"（通常 run は "run"）。
 
 # 校正用: 正規化画像と 5% グリッド焼き込み画像（出力先はアクセス制限ディレクトリに）
-python -m donor_mask rectify --in ./sample.jpg --out ./calib
+uv run python -m donor_mask rectify --in ./sample.jpg --out ./calib
 
 # テンプレート作成（設計書 5.4 C1）: 正規化済みの空欄サンプル＋測定値JSON から templates/<id> を作る
 #   測定値JSON: field_rect / anchor_type / anchor / required_cues / protected_rects / ignore_rects
 #               （任意: window_expand / expected_mask_area / note / f_rules。f_rules は template.json にそのまま書かれる）
 #               （座標は推測しない。5枚未満は既定でエラー、--allow-fewer で暫定扱い＝min_samples_met=false）
-python -m donor_mask template-build --in ./calib_samples --out ./templates/my_back_v1 --id my_back_v1 \
+uv run python -m donor_mask template-build --in ./calib_samples --out ./templates/my_back_v1 --id my_back_v1 \
     --label back --spec ./my_back_v1_spec.json
 
 # 独立再検証（原本・マスク済みPNG・ログから V1〜V7 をやり直す）
-python -m donor_mask verify --orig ./inbox/a.jpg --masked ./out/ok/<job_id>__masked.png --log ./out/logs/<job_id>.json
+uv run python -m donor_mask verify --orig ./inbox/a.jpg --masked ./out/ok/<job_id>__masked.png --log ./out/logs/<job_id>.json
 
 # 集計（画像は出さない）: run のログから ok/review 件数・理由コード別件数・ZNCC/ECC/解像度の分布だけを出す
-python -m donor_mask aggregate --logs ./out [--mode run|diagnostic|any] [--json]
+uv run python -m donor_mask aggregate --logs ./out [--mode run|diagnostic|any] [--json]
 ```
 
 `--config`（既定 `config.toml`）と `--templates`（既定 `templates/`）で差し替えられます。しきい値は全て `config.toml`、設定ファイルの sha256 は毎回ログに残ります。
@@ -145,8 +145,8 @@ out/logs/batch_*.json            バッチ集計
 ## テスト
 
 ```bash
-pytest -q                      # 合成データのみ。オフライン。実在の免許証画像は使いません
-DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 任意: 実見本での挙動確認（見本は同梱しません）
+uv run pytest -q                      # 合成データのみ。オフライン。実在の免許証画像は使いません
+DONOR_MASK_SAMPLE_DIR=/path/to/samples uv run pytest tests/test_real_samples.py -s   # 任意: 実見本での挙動確認（見本は同梱しません）
 ```
 
 画像は全て `tests/fixtures_gen.py` が**決定的に生成する合成データ**（`SYNTHETIC_TEST` と明記）で、コミットしません。固定された変換グリッドの一部（回転 0/±5/±15/90/180/270、縮小、余白、遠近、γ、ぼかし、JPEG 品質 70/95、背景 3 種、台紙の4アスペクト、鏡像 ほか）を扱います。
@@ -167,7 +167,7 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 python tools/eval_variations.py                  # 合成見本（SYNTHETIC_TEST）で全軸（約1分）
 python tools/eval_variations.py --axes tilt,blur --json
 python tools/eval_variations.py --samples ./norm_samples --template templates/real_back_v1   # 正規化済み(1011x638)の見本。欄・保護領域は template.json から
-pytest tests/test_variation_eval.py -s           # 生成・評価関数の検査 + 全グリッド（約1分。結果表を表示）
+uv run pytest tests/test_variation_eval.py -s           # 生成・評価関数の検査 + 全グリッド（約1分。結果表を表示）
 ```
 
 - 軸: `background`（8 種×傾き 0/8°）、`tilt`（±5〜30°・遠近）、`finger`（四辺から＋欄の上。肌色の楕円）、`shrink`（0.8〜0.2 倍、INTER_AREA）、`blur`（ガウス σ・直線ブレ）、`combo`（固定シードの複合 16 件）。計 70 件。
