@@ -80,7 +80,7 @@ _REQUIRED = {
     "ink": ["ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
             "print_dilate_px", "open_px", "border_ignore_px", "ink_min_len_px", "ink_edge_margin_px",
             "ink_corner_ignore_px"],
-    "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "card_corner_dist_ratio_color", "card_corner_dist_ratio_sift", "redetect_erode_px",
+    "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "card_corner_dist_ratio_color", "card_corner_dist_ratio_sift", "v4_card_missing_ok", "redetect_erode_px",
                "digit_absent_max"],
     "calibrate": ["min_samples", "align_max_correlation", "avg_threshold"],
     "output": ["png_compression", "preview_jpeg_quality"],

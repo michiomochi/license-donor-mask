@@ -151,6 +151,7 @@ field_iou_min = 0.70           # V1: マスク多角形と field_rect の IoU
 card_corner_dist_ratio = 0.01  # V4: 対角線長に対する比
 card_corner_dist_ratio_color = 0.015  # V4: S1 が色の地図のフォールバックで見つけたカードだけ（辺の位置が数px揺れる）
 card_corner_dist_ratio_sift = 0.05     # SIFT の四角のときの V4 の角の許容（対角線比）
+v4_card_missing_ok = 0         # 1: 塗り後にカードが再検出できなくても V4 を通す（塗りの多少のはみ出しを許容）。既定 0
 redetect_erode_px = 3          # V4: マスク内を侵食してから Canny を数える
 digit_absent_max = 0.3         # V4 / A(digits123): マスク領域内での数字パッチ照合の上限〔設計§3 V4 の暫定値・校正待ち〕。これ未満なら痕跡なし
 

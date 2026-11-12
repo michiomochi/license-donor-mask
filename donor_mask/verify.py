@@ -129,6 +129,8 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     res["card"] = {"n_candidates": len(found), "min_corner_dist_px": dmin,
                    "limit_px": ratio * quad_diag(logged)}
     card_ok = dmin <= res["card"]["limit_px"]
+    if int(v.v4_card_missing_ok) == 1 and len(found) == 0:
+        card_ok = True  # 塗りがカードの縁へ多少はみ出して再検出できなくても許容する（塗り残しは V1〜V3・V5・V7 が見る）
     if geom.get("card_sift"):
         # 特徴点（SIFT）の射影で求めた四角は輪郭に基づかない。輪郭が取れない写真向けなので、再検出で輪郭が見つからなくても
         # 「カード四辺が壊れた」とは言えない。輪郭が見つかったときは、広めの許容（verify.card_corner_dist_ratio_sift）で一致を見る。
