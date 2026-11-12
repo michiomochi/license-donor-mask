@@ -11,7 +11,6 @@ import numpy as np
 
 from . import layout
 
-SIDES = ("l", "t", "r", "b")
 
 
 def ink_map(aligned_bgr, print_map, cfg) -> np.ndarray:

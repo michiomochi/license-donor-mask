@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from . import __version__, card, field, imgio, mask, orient, quality, verify
-from .geom import apply_h, edge_lengths, hypothesis_quads, order_quad, polygon_mask, r4, rect_poly
+from .geom import apply_h, edge_lengths, hypothesis_quads, order_quad, rect_poly
 
 FILL_COLORS = {"black": (0, 0, 0), "white": (255, 255, 255)}  # BGR。単色のみ（noise/ぼかし/モザイクは実装しない）
 SCHEMA_VERSION = 1
