@@ -16,7 +16,7 @@ import cv2
 import numpy as np
 
 from . import __version__, card, field, imgio, mask, orient, quality, verify
-from .geom import apply_h, edge_lengths, hypothesis_quads, order_quad, rect_poly
+from .geom import apply_h, hypothesis_quads, order_quad, rect_poly
 
 FILL_COLORS = {"black": (0, 0, 0), "white": (255, 255, 255)}  # BGR。単色のみ（noise/ぼかし/モザイクは実装しない）
 SCHEMA_VERSION = 1
@@ -325,7 +325,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         if rs:
             _fail("S3", rs)
         tmpl = next(t for t in templates if t.id == best["template"])
-        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = orient.hyp_quad(cands_s, best)
         # S4
         norm, M = orient.normalize(img, quad, cfg)
         A, met, rs = _run("S4", s4_align, norm, tmpl, cfg)
@@ -337,8 +337,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         ctx["P_t2o"] = P
         aligned = orient.aligned_image(img, P, cfg)
         # S5
-        e = edge_lengths(quad)
-        card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
+        card_long = orient.card_long_edge(quad)
         met, rs = _run("S5", s5_quality, aligned, tmpl, card_long, cfg)
         if card_long < cfg.input.min_card_long_edge_px:
             rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
@@ -637,7 +636,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if tmpl is None or not tmpl.positive:  # 対象様式（positive）を選べていない。S4 以降は意味を持たない
             return skip(("S4", "S5", "S6", "S7"), "S3")
         got["tmpl"] = tmpl
-        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = orient.hyp_quad(cands_s, best)
         # S4
         nm = call("S4", orient.normalize, img, quad, cfg)
         r4 = call("S4", s4_align, nm[0], tmpl, cfg) if nm else None
@@ -651,8 +650,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         P = np.array(sig12(orient.template_to_orig(M10, A10)))
         aligned = orient.aligned_image(img, P, cfg)
         # S5（落ちても S6 以降は計算する）
-        e = edge_lengths(quad)
-        card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
+        card_long = orient.card_long_edge(quad)
         r5 = call("S5", s5_quality, aligned, tmpl, card_long, cfg)
         if r5:
             met, rs = r5

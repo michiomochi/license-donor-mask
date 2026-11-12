@@ -5,7 +5,7 @@ import cv2
 import numpy as np
 
 from . import layout
-from .geom import affine3, canon_matrix, hypothesis_quads, quad_iou, rect_iou, warp_to_frame
+from .geom import affine3, canon_matrix, edge_lengths, hypothesis_quads, quad_iou, rect_iou, warp_to_frame
 
 
 def normalize(img, quad, cfg):
@@ -67,7 +67,7 @@ def frame_match(img, templates, cfg) -> dict:
             "filled": bool(best["zncc"] >= zmin and best["zncc"] > inset_max)}
 
 
-def _hyp_quad(candidates, h):
+def hyp_quad(candidates, h):
     """仮説の四角（向き付き）。hypothesis_quads の並びは rot/90 + mirror*4。"""
     return hypothesis_quads(candidates[h["cand"]]["quad"])[h["rot"] // 90 + (4 if h["mirror"] else 0)][2]
 
@@ -98,7 +98,7 @@ def find_twin(hypotheses, best, candidates, cfg, templates=None):
     戻りは ZNCC 最大の twin（無ければ None）。
     """
     fam_iou = float(cfg.select.family_iou)
-    q_best = _hyp_quad(candidates, best)
+    q_best = hyp_quad(candidates, best)
     q_flip = q_best[[1, 0, 3, 2]]  # 左右反転
     twins = []
     for h in hypotheses:
@@ -106,7 +106,7 @@ def find_twin(hypotheses, best, candidates, cfg, templates=None):
             continue
         if not _same_family(h["template"], best["template"], templates, fam_iou):
             continue
-        if float(np.abs(_hyp_quad(candidates, h) - q_flip).max()) > 1e-3:
+        if float(np.abs(hyp_quad(candidates, h) - q_flip).max()) > 1e-3:
             continue  # 幾何が左右反転でないものは twin ではない（実装依存にしない）
         twins.append(h)
     return min(twins, key=_rank) if twins else None
@@ -329,3 +329,9 @@ def template_to_orig(M_n2o, A) -> np.ndarray:
 def aligned_image(img, P_t2o, cfg):
     """元画像を、位置合わせ済みのテンプレート座標系（1011x638）へ1回の補間で写す。"""
     return warp_to_frame(img, P_t2o, int(cfg.canvas.width), int(cfg.canvas.height))
+
+
+def card_long_edge(quad):
+    """四角の長辺の長さ（向かい合う辺の平均の大きい方）。"""
+    e = edge_lengths(quad)
+    return float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
