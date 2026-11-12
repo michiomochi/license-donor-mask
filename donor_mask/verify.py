@@ -228,6 +228,7 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
     cv2.fillPoly(excl, [np.round(poly_t).astype(np.int32)], 1)
     for r in list(tmpl.ignore_rects) + list(tmpl.meta["protected_rects"]):
         cv2.rectangle(excl, (int(round(r[0])), int(round(r[1]))), (int(round(r[2])), int(round(r[3]))), 1, -1)
+    stroke_found = _protected_strokes(ink, poly_t, tmpl, k, W, H)
     ink = np.where(excl > 0, 0, ink).astype(np.uint8)
     n, _lab, stats, _cent = cv2.connectedComponentsWithStats((ink > 0).astype(np.uint8), connectivity=8)
     lo, m = int(k.ink_min_len_px), int(k.ink_edge_margin_px)
@@ -250,11 +251,46 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
                         for cx0, cy0, cx1, cy1 in corners):
             continue  # 四隅（丸い角の外側の背景・紙の縁）の成分は数えない
         found.append({"bbox": [x, y, x + w, y + h], "long_px": long_px, "area": int(stats[i][4])})
+    found.extend(stroke_found)
     found.sort(key=lambda f: -f["long_px"])
     ok = not found
     return {"pass": ok, "code": None if ok else "V_INK_OUTSIDE",
             "metrics": {"n_components": len(found), "longest_px": longest,
                         "min_len_px": lo, "edge_margin_px": m, "worst": found[:5]}}
+
+
+def _protected_strokes(ink, poly_t, tmpl, k, W, H):
+    """マスクから続いて保護領域へはみ出した長い一画を拾う（V7 は保護領域の画素を落とすので、ここで別に見る）。
+
+    保護領域（備考欄など）には文字が正当に載るので、領域内の文字は数えない。数えるのは「マスクの近く
+    （ring_px の約 2 倍以内）に接していて、マスクから protected_stroke_px 以上離れた所まで届く成分」だけ
+    （文字は欄のすぐ上に収まるが、欄から続く一画はそれより遠くまで届く）。0 = 無効。向きには依存しない。
+    限界: 線が罫線の帯などで途切れていると拾えない（つなげると備考欄の文字まで一塊になり、正常な画像を止めるため採らない）。
+    """
+    n_min = int(k.protected_stroke_px)
+    if n_min <= 0:
+        return []
+    prot = np.zeros((H, W), np.uint8)
+    for r in tmpl.meta["protected_rects"]:
+        cv2.rectangle(prot, (int(round(r[0])), int(round(r[1]))), (int(round(r[2])), int(round(r[3]))), 1, -1)
+    near = np.zeros((H, W), np.uint8)
+    cv2.fillPoly(near, [np.round(poly_t).astype(np.int32)], 1)
+    g = 2 * int(k.ring_px) + 1
+    near = cv2.dilate(near, np.ones((2 * g + 1, 2 * g + 1), np.uint8))
+    inv = np.ones((H, W), np.uint8)
+    cv2.fillPoly(inv, [np.round(poly_t).astype(np.int32)], 0)
+    dist = cv2.distanceTransform(inv, cv2.DIST_L2, 3)
+    cand = ((ink > 0) & (prot > 0)).astype(np.uint8)
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(cand, connectivity=8)
+    out = []
+    for i in range(1, n):
+        comp = lab == i
+        x, y, w, h = (int(v) for v in stats[i][:4])
+        reach = float(dist[comp].max())
+        if reach < n_min or not (near[comp] > 0).any():
+            continue
+        out.append({"bbox": [x, y, x + w, y + h], "long_px": int(round(reach)), "area": int(stats[i][4]), "kind": "protected_stroke"})
+    return out
 
 
 def verify_all(*, orig_arr, masked_arr, geom, tmpl, cfg, fill_bgr, orig_path=None, orig_before=None):

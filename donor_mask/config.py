@@ -77,7 +77,7 @@ _REQUIRED = {
               "digit_max_peaks"],
     "mask": ["clip_card_inset_px", "pad_x_min_px", "pad_x_ratio", "pad_y_min_px", "pad_y_ratio", "pad_cap_px",
              "protected_min_gap_px", "protected_clear_px", "area_ratio_min", "area_ratio_max", "grow_px"],
-    "ink": ["ink_thin_line_px", "ink_thin_line_zone_px", "tolerate_l", "tolerate_t", "tolerate_r", "tolerate_b", "expand_hits_protected_ok", "ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
+    "ink": ["ink_thin_line_px", "ink_thin_line_zone_px", "protected_stroke_px", "tolerate_l", "tolerate_t", "tolerate_r", "tolerate_b", "expand_hits_protected_ok", "ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
             "print_dilate_px", "open_px", "border_ignore_px", "ink_min_len_px", "ink_edge_margin_px",
             "ink_corner_ignore_px"],
     "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "card_corner_dist_ratio_color", "card_corner_dist_ratio_sift", "v4_card_missing_ok", "redetect_erode_px",
