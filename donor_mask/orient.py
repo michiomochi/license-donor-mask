@@ -255,9 +255,9 @@ def refine_quad(img, quad, template, cfg):
     diag = float(np.hypot(*(q0.max(axis=0) - q0.min(axis=0))))
     q, log = q0.copy(), []
     crit = (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, int(e.iterations), float(e.eps))
-    prev = None
+    cur, best_cc, best_q, bad = q0.copy(), None, q0.copy(), 0
     for _ in range(n):
-        norm, M = normalize(img, q, cfg)
+        norm, M = normalize(img, cur, cfg)
         inp_f = cv2.GaussianBlur(layout.zero_rects(layout.ruling_map(norm, cfg), ign).astype(np.float32) / 255.0,
                                  (0, 0), float(e.blur_sigma))
         try:
@@ -266,17 +266,22 @@ def refine_quad(img, quad, template, cfg):
         except cv2.error:
             log.append({"error": True})
             break
-        if prev is not None and cc <= prev:
-            log.append({"cc": float(cc), "stop": "no_gain"})
-            break
         P = np.asarray(M, np.float64) @ affine3(warp)
         pts = np.c_[corners, np.ones(4)] @ P.T
         qn = pts[:, :2] / pts[:, 2:3]
         if not np.all(np.isfinite(qn)) or float(np.abs(qn - q0).max()) > float(e.refine_max_move_ratio) * diag:
             log.append({"cc": float(cc), "stop": "too_far"})
             break
-        q, prev = qn, float(cc)
         log.append({"cc": float(cc)})
+        cur = qn
+        # 各回の ECC 相関は「その回の入力」への一致度。最良の回の四角を採用し、2回続けて改善しなければ止める
+        if best_cc is None or cc > best_cc:
+            best_cc, best_q, bad = float(cc), qn, 0
+        else:
+            bad += 1
+            if bad >= 2:
+                break
+    q = best_q
     return q, {"iters": log, "moved_px": float(np.abs(q - q0).max())}
 
 
