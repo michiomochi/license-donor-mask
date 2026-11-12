@@ -55,39 +55,39 @@ class Config(Section):
 
 # 必須キー（欠けていたら起動時に ConfigError）。値の型は数値/配列のみ許す。
 _REQUIRED = {
-    "input": ["max_pixels", "min_long_edge_px"],
+    "input": ["max_pixels", "min_card_long_edge_px"],
     "canvas": ["width", "height", "card_aspect"],
-    "card": ["work_long_edge", "canny_low", "canny_high", "canny_dilate", "approx_eps", "min_area_ratio",
+    "card": ["work_long_edge", "canny_low", "canny_high", "grabcut_fallback", "sift_fallback", "sift_overshoot_ratio", "sift_work_long_edge", "sift_n_features", "sift_ratio", "sift_ransac_px", "sift_min_inliers", "grabcut_margin", "grabcut_seed_a", "grabcut_seed_b", "grabcut_iters", "canny_color_low", "canny_color_high", "edge_support_tol_color_px", "canny_dilate", "approx_eps", "min_area_ratio",
              "max_area_ratio", "angle_min_deg", "angle_max_deg", "max_opposite_ratio", "aspect_tol",
              "edge_support_min", "edge_support_tol_px", "border_margin_ratio", "border_margin_px",
              "consensus_min_maps", "consensus_dist_ratio", "corner_refine_band", "corner_refine_min_points",
              "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px", "frame_filled_zncc_min",
              "frame_filled_inset_scales"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
-    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3"],
-    "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
+    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3", "m3_min_score", "m3_margin", "m3_search_px", "m3_waives_score"],
+    "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "refine_iters", "refine_max_move_ratio", "max_translation_ratio",
             "scale_min", "scale_max", "max_rotation_deg"],
     "quality": ["glare_level", "glare_max_ratio", "blur_min_laplacian_var", "contrast_min_p95_p5"],
-    "field": ["frame_support_min", "frame_support_band_px", "frame_min_iou", "f_rules_support_min", "f_rules_tol_px",
+    "field": ["frame_support_min", "frame_support_band_px", "frame_min_iou", "f_rules_support_min", "f_rules_missing_max", "f_rules_tol_px",
               "anchor_side_tol",
               "anchor_aspect_min", "anchor_aspect_max", "anchor_rectangularity_min", "anchor_circularity_min",
               "anchor_max_singles", "triple_side_cv_max", "triple_xshift_max", "triple_gap_ratio_max",
               "triple_pitch_tol", "iou_tf_min", "iou_fa_min", "iou_ta_min",
               "s_digit", "digit_margin_min", "digit_pitch_tol", "digit_xshift_h", "digit_gap_ratio_max", "digit_nms_px",
               "digit_max_peaks"],
-    "mask": ["pad_x_min_px", "pad_x_ratio", "pad_y_min_px", "pad_y_ratio", "pad_cap_px",
+    "mask": ["clip_card_inset_px", "pad_x_min_px", "pad_x_ratio", "pad_y_min_px", "pad_y_ratio", "pad_cap_px",
              "protected_min_gap_px", "protected_clear_px", "area_ratio_min", "area_ratio_max", "grow_px"],
-    "ink": ["ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
+    "ink": ["ink_thin_line_px", "tolerate_l", "tolerate_t", "tolerate_r", "tolerate_b", "expand_hits_protected_ok", "ring_px", "ink_ratio_max", "cross_min_len_px", "expand_px", "max_expand_times",
             "print_dilate_px", "open_px", "border_ignore_px", "ink_min_len_px", "ink_edge_margin_px",
             "ink_corner_ignore_px"],
-    "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "redetect_erode_px",
+    "verify": ["inside_min_dist_px", "field_iou_min", "card_corner_dist_ratio", "card_corner_dist_ratio_color", "card_corner_dist_ratio_sift", "v4_card_missing_ok", "redetect_erode_px",
                "digit_absent_max"],
     "calibrate": ["min_samples", "align_max_correlation", "avg_threshold"],
     "output": ["png_compression", "preview_jpeg_quality"],
 }
 
 # 文字列で持つ設定キー（列挙値）。数値・bool を許すと「無効化」できてしまうものだけをここに置く。
-_STRING_KEYS = {("select", "mirror_m3"): ("unimplemented",)}
+_STRING_KEYS = {("select", "mirror_m3"): ("unimplemented", "digits23")}
 
 
 def load_config(path=None) -> Config:
@@ -170,9 +170,9 @@ def _validate_mirror_gate(raw: dict):
         raise ConfigError(f"[select] mirror_margin は正の数（M2 を無効化できない）: {s['mirror_margin']!r}")
     if not (0.0 < float(s["family_iou"]) <= 1.0):
         raise ConfigError(f"[select] family_iou は (0, 1]: {s['family_iou']!r}")
-    if s["mirror_m3"] != "unimplemented":
-        raise ConfigError(f"[select] mirror_m3 は \"unimplemented\" のみ（M3 は未実装。"
-                          f"無効化・別の値は不可）: {s['mirror_m3']!r}")
+    if s["mirror_m3"] not in ("unimplemented", "digits23"):
+        raise ConfigError(f"[select] mirror_m3 は \"unimplemented\" か \"digits23\" のみ（無効化・別の値は不可）"
+                          f": {s['mirror_m3']!r}")
     if not (0.0 < float(f["f_rules_support_min"]) <= 1.0):
         raise ConfigError(f"[field] f_rules_support_min は (0, 1]: {f['f_rules_support_min']!r}")
     if int(f["f_rules_tol_px"]) < 0:

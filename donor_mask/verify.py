@@ -121,12 +121,23 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     # 黒塗りで Otsu の閾値が変わり、マスクがカード縁に近いと縁のエッジも弱まる。再検出は 1 マップ合意・縁の支持率 0.5 で緩め、
     # 代わりに「ログの四角との角の一致 1%」を厳密に見る（カード幾何が壊れていないことの確認が目的）
     # templates=None: V4 が使うのは candidates だけ。枠いっぱいの照合（C_FRAME_FILLED の判定）は不要なので明示的に省く
-    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5),
+    # 色味で見つけたカード（S1 のフォールバック）は辺の位置が数px揺れるので、許容だけ別キーで広げる
+    ratio = v.card_corner_dist_ratio_color if geom.get("card_color_fallback") else v.card_corner_dist_ratio
+    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5, sift_fallback=0),
                                     None)["candidates"]
     dmin = min((quad_dist(logged, c["quad"]) for c in found), default=1e9)
     res["card"] = {"n_candidates": len(found), "min_corner_dist_px": dmin,
-                   "limit_px": v.card_corner_dist_ratio * quad_diag(logged)}
+                   "limit_px": ratio * quad_diag(logged)}
     card_ok = dmin <= res["card"]["limit_px"]
+    if int(v.v4_card_missing_ok) == 1 and len(found) == 0:
+        card_ok = True  # 塗りがカードの縁へ多少はみ出して再検出できなくても許容する（塗り残しは V1〜V3・V5・V7 が見る）
+    if geom.get("card_sift"):
+        # 特徴点（SIFT）の射影で求めた四角は輪郭に基づかない。輪郭が取れない写真向けなので、再検出で輪郭が見つからなくても
+        # 「カード四辺が壊れた」とは言えない。輪郭が見つかったときは、広めの許容（verify.card_corner_dist_ratio_sift）で一致を見る。
+        # 塗り残し・はみ出しは V1〜V3・V5・V7 と下の点検（探索窓・マスク内エッジ）が引き続き見る
+        res["card"]["sift"] = True
+        res["card"]["limit_px"] = float(v.card_corner_dist_ratio_sift) * quad_diag(logged)
+        card_ok = len(found) == 0 or dmin <= res["card"]["limit_px"]
     # 探索窓内にチェックボックス単体候補・3連が残っていない
     P = np.asarray(geom["P_t2o"], np.float64)
     W, H = int(cfg.canvas.width), int(cfg.canvas.height)
@@ -229,6 +240,8 @@ def v7_ink_outside(orig, geom: dict, tmpl, cfg):
         longest = max(longest, long_px)
         if long_px < lo:
             continue
+        if int(k.ink_thin_line_px) > 0 and min(w, h) <= int(k.ink_thin_line_px):
+            continue  # 幅が数px以下の細長い線（カード縁・罫線）は文字ではないので数えない（0=無効）
         if x < m or y < m or x + w > W - m or y + h > H - m:  # カード縁の成分は数えない
             continue
         if c > 0 and any(x < cx1 and x + w > cx0 and y < cy1 and y + h > cy0

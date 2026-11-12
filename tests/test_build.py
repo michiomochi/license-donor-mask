@@ -377,3 +377,35 @@ def test_spec_without_f_rules_writes_null(cfg, tmp_path):
     meta = build.build_template(sorted(d.iterdir()), tmp_path / "t" / "nof_v1", cfg, template_id="nof_v1",
                                 spec=SPEC, allow_fewer=True)
     assert meta["f_rules"] is None
+
+
+def _low_luminance_contrast_photo(card_bgr):
+    """明度がほぼ同じ（差 5 程度）の台形カードを白い背景に置いた合成画像（SYNTHETIC_TEST）。色味だけが違う。"""
+    img = np.full((474, 640, 3), (235, 235, 235), np.uint8)
+    quad = np.array([[62, 56], [556, 56], [630, 392], [15, 392]], np.int32)
+    cv2.fillConvexPoly(img, quad, card_bgr)
+    return cv2.GaussianBlur(img, (3, 3), 0)
+
+
+def test_color_fallback_finds_card_when_luminance_contrast_is_tiny(cfg, tmpls):
+    """明度の3地図で取れず、色味（Lab a/b）が違うカードだけ、フォールバックで候補になる。幾何ゲートは同じ。"""
+    img = _low_luminance_contrast_photo((190, 238, 255))
+    res = find_candidates(img, cfg, tmpls[0])
+    assert res["color_fallback"] is True
+    assert len(res["candidates"]) == 1
+    assert any(m.startswith("lab_") for m in res["candidates"][0]["maps"])
+    q = np.array(res["candidates"][0]["quad"])
+    assert np.abs(q - np.array([[62, 56], [556, 56], [630, 392], [15, 392]])).max() < 8
+
+
+def test_color_fallback_does_not_invent_a_card_from_a_blank_photo(cfg, tmpls):
+    """色味の差も無い（一様な灰色）画像では、フォールバックしても候補は 0 のまま（C_NO_CARD）。"""
+    img = np.full((474, 640, 3), (235, 235, 235), np.uint8)
+    res = find_candidates(img, cfg, tmpls[0])
+    assert res["candidates"] == []
+
+
+def test_color_fallback_not_used_when_luminance_maps_already_find_the_card(cfg, tmpls):
+    """今までの経路で取れる入力は、フォールバックを使わない（結果を変えない）。"""
+    res = find_candidates(fx.make({"seed": 3, "scale": 0.6}).img, cfg, tmpls[0])
+    assert res["candidates"] and res["color_fallback"] is False

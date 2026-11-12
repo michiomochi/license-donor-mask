@@ -87,4 +87,5 @@ def check_boundary_ink(ink: np.ndarray, rect, cfg):
             if sc > sa and sd > sb and outside_pts[sb:sd, sa:sc].any():
                 bad.add(s)
                 met["crossing"].append(s)
+    bad -= {sd for sd in "ltrb" if int(getattr(k, "tolerate_" + sd)) == 1}  # 塗りが厳密でなくてよい辺（tolerate_l/t/r/b = 1。例: t は保護領域に接する上辺）の境界インクは失敗にしない
     return bad, met

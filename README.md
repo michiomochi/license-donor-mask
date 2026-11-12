@@ -49,6 +49,14 @@
 | 各段で例外・shadow モード | `X_EXCEPTION`（握り潰して ok にしない）/ `X_SHADOW` |
 | 入力 | `E_FORMAT_UNSUPPORTED`（JPEG/PNG 以外）/ `E_TOO_LARGE`（50MP 超）/ `E_DECODE` |
 
+### 色味の地図によるフォールバック（S1）
+
+白〜クリーム色のカードを白い背景に置いた写真は、明度（Canny／大津）ではカード外形が取れません（素材写真で C_NO_CARD になった）。
+明度の3地図で候補が1つも取れなかったときだけ、Lab の a/b（色味）の大津2値化と色味の Canny を足してやり直します。
+先に取れた入力の経路は変わりません。足した地図も同じ幾何ゲート（面積・角度・遠近・アスペクト・辺の支持 0.85）と「2地図以上の一致」を通ります。
+辺の位置が数px揺れるので、このフォールバックで見つけたカードだけ、辺の支持の許容（`edge_support_tol_color_px`）と V4 のカード角の許容（`card_corner_dist_ratio_color`）を広げています。
+フォールバックを使ったかはログ `stages.S1.color_fallback` と、候補の `maps`（`lab_*`）に残ります。
+
 ### 塗った後の検証（全部 AND。`donor_mask/verify.py`）
 
 | | 内容 |
@@ -144,8 +152,8 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 
 | 見本 | カード検出 | 向き | 検出された欄 | 被覆率 | verified | 結果 |
 |---|---|---|---|---|---|---|
-| kumaisui_driver_license.png | 未実施（S0 で停止） | — | — | — | — | **review**（終了コード 3）`Q_LOW_RES`: 長辺 340px < 800px |
-| mhlw_intention_01.jpg | 未実施（S0 で停止） | — | — | — | — | **review** `Q_LOW_RES`: 長辺 520px < 800px |
+| kumaisui_driver_license.png | 未実施（S0 で停止） | — | — | — | — | **review**（終了コード 3）`Q_LOW_RES`: 長辺 340px < 800px（当時の仕様。現在は入力画像の長辺ではなくカード長辺 ≥ 400px で判定） |
+| mhlw_intention_01.jpg | 未実施（S0 で停止） | — | — | — | — | **review** `Q_LOW_RES`: 長辺 520px < 800px（当時の仕様。同上） |
 
 解像度ゲートを診断用に 200px へ下げた実行（`min_long_edge_px = 200` の一時設定。既定値は変えていません）:
 
@@ -227,3 +235,23 @@ DONOR_MASK_SAMPLE_DIR=/path/to/samples pytest tests/test_real_samples.py -s   # 
 ## ライセンスと権利
 
 MIT License, Copyright (c) 2026 Masayoshi Michikawa。見本画像（上記2枚）の権利は各権利者に帰属し、このリポジトリには含まれません。
+
+## 背景分離（GrabCut）によるフォールバック（S1）
+
+手持ち・机・床など、背景が複雑で明度や色味の2値化ではカードの外形が取れない写真のための3段目のフォールバックです。
+
+- 動くとき: 明度の3地図でも、色味の地図でも、候補が0件だったときだけ。先に取れる入力の経路は変わりません。
+- やること: 画像の縁を確実な背景、中心付近を確実な前景の種にして GrabCut を2回（種の大きさ `grabcut_seed_a`/`grabcut_seed_b` を変えて）実行し、2つの前景が同じ四角形を返したときだけ候補にします。運用前提「カードは画像の中心付近にある」を使います。
+- 緩めないもの: 幾何ゲート、辺の支持、S2/S3 の罫線照合、V1〜V7。GrabCut の候補も同じゲートを通ります。
+- 安全策: 色の種類が少ない画像（単色・2色の絵）では使いません。600px に縮めて計算し、乱数は使いません（結果は毎回同じ）。
+- 無効化: `config.toml` の `grabcut_fallback = 0`。
+- ログ: `grabcut_fallback`（動いたか）、`grabcut_rejected`（候補にならなかった理由）。
+- 限界: 色つきまだら背景で大きく（約20°）傾いた写真などは取れません。取れない場合は review になり、誤って塗ることはありません。
+
+## M3（印刷数字 2・3 の左右反転照合）
+
+`config.toml` の `[select] mirror_m3` は `"unimplemented"`（既定。M2 だけで判定し、M3 は保留をログに残す）か `"digits23"` を取ります。
+
+- `digits23`: 非鏡像の best が `O_MIRROR_AMBIGUOUS` で止まるとき、正規化画像の数字「2」「3」の位置で、通常向きと左右反転のパッチ照合を比べます。両方の数字で通常 ≥ `m3_min_score`（0.70）かつ 通常 − 反転 ≥ `m3_margin`（0.15）なら曖昧さを解きます。罫線は左右ほぼ対称で区別できませんが、数字は区別できます。
+- `m3_waives_score = 1`（緩和。既定は 0。`config.m3.toml` でだけ 1）: M3 が通ったとき `O_LOW_SCORE` / `O_AMBIGUOUS` も解きます。斜め・低解像度で罫線の ZNCC が低いだけの写真向けです。S4〜S7（ECC 相関・罫線 F・数字 A・V1〜V7）と鏡像そのもの（`O_MIRRORED`）は変わりません。
+- 実測（素材画像4枚。標本が少ない）: 非鏡像の仮説で 通常 0.82〜0.94 / 反転 0.63〜0.67、鏡像の仮説で 通常≒反転。閾値は要校正です。

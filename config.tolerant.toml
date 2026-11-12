@@ -1,0 +1,173 @@
+# donor_mask 設定。しきい値は全てここ（コードに直書きしない）。
+# 値は設計書(DESIGN.md)の「初期値」。実物での校正が済んだ値ではない。変更すると config_sha256 がログに残る。
+
+[input]
+max_pixels = 50000000          # E_TOO_LARGE
+min_card_long_edge_px = 250     # Q_LOW_RES: S1 後の、元画像上のカード長辺(px)の下限（入力画像の長辺ではない）。暫定。根拠は DESIGN.md §S5
+
+[canvas]
+width = 1011                   # 85.6mm x 54mm の正規化キャンバス（約11.81px/mm）
+height = 638
+card_aspect = 1.585
+
+[card]                         # S1
+work_long_edge = 1200
+canny_low = 40
+sift_fallback = 3
+sift_overshoot_ratio = 0.06   # SIFT の四角が画像の外へはみ出してよい割合（短辺比）。既定 0
+sift_work_long_edge = 1000
+sift_n_features = 4000
+sift_ratio = 0.8
+sift_ransac_px = 6.0
+sift_min_inliers = 24
+canny_high = 120
+canny_dilate = 3
+edge_support_tol_color_px = 5.0 # 同フォールバックでの辺の支持の許容（明度差が小さい辺は Canny の位置が揺れる）
+grabcut_fallback = 1            # 明度・色味の地図でも候補が0件のときだけ、GrabCut の前景を地図として足す（0 で無効）
+grabcut_margin = 0.02           # 画像の縁のこの比を確実な背景にする
+grabcut_seed_a = 0.20           # 中心のこの比四方を確実な前景の種にする。a と b で種の大きさを変え、
+grabcut_seed_b = 0.40           # 両方が同じ四角形を返したときだけ候補にする（カードは画像の中心付近にある前提）
+grabcut_iters = 5
+canny_color_low = 10           # 辺の支持用: Lab の a/b チャネルの Canny（色味の段差。明度差が無い辺向け）
+canny_color_high = 30
+approx_eps = [0.01, 0.02, 0.03, 0.05]
+min_area_ratio = 0.15
+max_area_ratio = 1.5
+angle_min_deg = 70.0
+angle_max_deg = 110.0
+max_opposite_ratio = 1.30      # 超えたら C_PERSPECTIVE
+aspect_tol = 0.20              # 1.585 の ±20%
+edge_support_min = 0.85
+edge_support_tol_px = 3.0
+border_margin_ratio = 0.005    # 画像短辺に対する比。かつ border_margin_px 以上
+border_margin_px = 3.0
+consensus_min_maps = 2         # canny / otsu / otsu_inv のうち
+consensus_dist_ratio = 0.01    # 対角線長に対する比
+corner_refine_band = 0.015     # 対角線長に対する比（辺近傍帯）
+corner_refine_min_points = 30
+max_candidates = 12            # 超えたら C_TOO_MANY_CANDIDATES
+frame_filled_aspect_tol = 0.05 # C_FRAME_FILLED の前置き: 画像全体の輪郭がカード比 1.585±5% のときだけ照合する
+frame_filled_corner_px = 4.0   # C_FRAME_FILLED の前置き: 4角が画像の隅からこの距離以内なら外枠とみなす
+frame_filled_zncc_min = 0.40   # C_FRAME_FILLED: 画像全体を1枚のカードとみなした最大 ZNCC（全テンプレート・8仮説）の下限。実測: 枠いっぱいのカード（切り出し c1〜c3）0.782/0.531/0.515、実写真 img_838 0.109（3枚の最大は 0.308）
+frame_filled_inset_scales = [0.97, 0.94, 0.91, 0.88]  # C_FRAME_FILLED: 同じ仮説で枠を中心へ縮めた ZNCC がどれも全体の枠より低いこと（余白付きカードの誤判定を防ぐ。余白3%の合成カード: 全体 0.582 < 縮めた枠 0.652）
+
+[signature]                    # S2 レイアウト署名
+block_size = 31
+c = 10
+kernel_h = 41
+kernel_v = 25
+out_width = 101
+out_height = 64
+blur_sigma = 1.0               # 署名の縮小後に掛ける（設計書の署名定義への追加。0 で無効）
+
+[select]                       # S3
+min_zncc = 0.55
+min_margin = 0.10
+tie_eps = 1e-6
+multi_card_iou = 0.10
+family_iou = 0.90              # §1.5b 配置ファミリー（field_rect 同士の IoU）。同族は互いに second にしない
+mirror_margin = 0.03           # §1.5c M2: best.zncc - twin.zncc >= これ。0 以下は ConfigError（無効化できない）
+mirror_m3 = "digits23"    # §1.5c M3。"unimplemented"（既定。判定を保留し M2 だけ）か "digits23"（数字2・3の左右反転照合で M2 の曖昧さを解く）。他は ConfigError
+m3_min_score = 0.70             # digits23: 通常向きの数字パッチ照合値の下限（2・3 の両方）
+m3_margin = 0.15                # digits23: 通常 − 左右反転 の下限（2・3 の両方）
+m3_waives_score = 1            # 1: digits23 が通ったとき O_LOW_SCORE / O_AMBIGUOUS も解く（緩和。既定は 0。プロファイルでだけ 1）
+m3_search_px = 40               # digits23: 数字の中心の周りの探索半幅（正規化 1011×638 の px。位置合わせ前なので少し広く）
+
+[ecc]                          # S4
+iterations = 50
+eps = 1e-5
+blur_sigma = 3.0
+gauss_filt_size = 5
+min_correlation = 0.45
+refine_iters = 10
+refine_max_move_ratio = 0.08
+max_translation_ratio = 0.02   # カード幅に対する比
+scale_min = 0.97
+scale_max = 1.03
+max_rotation_deg = 2.0
+
+[quality]                      # S5（探索窓内で測る）
+glare_level = 250
+glare_max_ratio = 0.15
+blur_min_laplacian_var = 60.0
+contrast_min_p95_p5 = 60.0
+
+[field]                        # S6
+frame_support_min = 0.85
+frame_support_band_px = 3
+frame_min_iou = 0.30           # F 候補として検討する下限（これ未満は F_FRAME_NOT_FOUND）
+f_rules_support_min = 0.5     # F（線分の一致。template.json の f_rules）の支持率しきい値
+f_rules_missing_max = 1     # F: 見つからなくてもよい罫線の本数。既定 0（全部必要）
+f_rules_tol_px = 12             # F の各線分の位置ずれ許容（期待バンドの外側にこの px まで）
+anchor_side_tol = 0.35
+anchor_aspect_min = 0.80
+anchor_aspect_max = 1.25
+anchor_rectangularity_min = 0.80
+anchor_circularity_min = 0.80  # anchor_type = "circle3" のとき
+anchor_max_singles = 40
+triple_side_cv_max = 0.12
+triple_xshift_max = 0.35       # 辺長に対する倍率
+triple_gap_ratio_max = 1.20
+triple_pitch_tol = 0.20
+iou_tf_min = 0.80
+iou_fa_min = 0.85
+iou_ta_min = 0.80
+# A(digits123): 印刷数字 1/2/3 のパッチ照合（文字認識ではなく印刷様式部品の位置合わせ）。以下は設計 §1.8b の暫定値・校正待ち
+s_digit = 0.6                  # A(digits123): パッチ照合 TM_CCOEFF_NORMED の採用下限（実測 c1: 1.0 / c2: 0.85〜0.92 / c3: 0.82〜0.92）
+digit_margin_min = 0.05        # A(digits123): 各位置で「期待する数字のパッチ」が3枚の中で最大であるための、2位との差の下限〔暫定〕。s_digit だけでは数字どうしの照合値（実測 0.64〜0.69）がしきい値を超えるため、順序 1→2→3 の判定に必要
+digit_pitch_tol = 0.15         # A(digits123): 数字間隔が期待ピッチ(anchor.pitch)から外れてよい割合
+digit_xshift_h = 0.5           # A(digits123): x 中心の平均からのずれの上限（数字の高さに対する倍率）
+digit_gap_ratio_max = 1.2      # A(digits123): 隣り合う2つの間隔の比の上限
+digit_nms_px = 7               # A(digits123): 極大の非極大抑制の半径(px)
+digit_max_peaks = 120          # A(digits123): 1パッチあたりの極大数の上限（超えたら F_ANCHOR_MULTIPLE）
+
+[mask]                         # S7
+clip_card_inset_px = 0         # >0: マスクをカード四角（この px 縮めた形）の内側で切る。0 で無効（既定）                         # S7
+pad_x_min_px = 12
+pad_x_ratio = 0.06
+pad_y_min_px = 12
+pad_y_ratio = 0.08
+pad_cap_px = 36                # 基本余白の上限（各辺）
+protected_min_gap_px = 6       # 余白を縮めた後に R から最低これだけ残す
+protected_clear_px = 3         # 保護領域との間に空ける隙間（元画像の grow 膨張が保護領域へ食い込まないため）
+area_ratio_min = 0.8
+area_ratio_max = 1.6
+grow_px = 2                    # 元画像でのマスク膨張
+
+[ink]                          # 境界インク（S7 と V5）
+ring_px = 12
+ink_ratio_max = 0.005
+cross_min_len_px = 10
+expand_px = 12
+tolerate_l = 0
+tolerate_t = 1             # 1: その辺の境界インクを失敗にしない（塗りが厳密でなくてよい運用。t=保護領域に接する上辺）。既定 0
+tolerate_r = 0
+tolerate_b = 0
+expand_hits_protected_ok = 1
+max_expand_times = 2
+print_dilate_px = 5            # テンプレートの印刷物を除く際の膨張
+open_px = 2                    # インク画素のノイズ除去（モルフォロジー OPEN）
+border_ignore_px = 6           # 正規化キャンバスの縁（カード縁・背景の写り込み）はインクに数えない
+ink_min_len_px = 24            # V7: マスク外で拾う連結成分の外接矩形の長辺の下限（正規化座標で約2mm）
+ink_edge_margin_px = 6         # V7: カード縁からこの px 以内にかかる成分は数えない（背景の写り込み。増やすと検出が緩む）
+ink_thin_line_px = 8            # V7: 短辺がこの px 以下の細長い成分（カード縁・罫線）は数えない。既定 0=無効
+ink_corner_ignore_px = 48      # V7: 四隅のこの px 四方に入る成分は数えない（丸い角の外側の背景・紙の縁が写り込む帯。実物の角の半径は約3mm=35px、紙台紙では角の縁が長い縞になる）
+
+[verify]
+inside_min_dist_px = 6.0       # V1: 正規化座標での内側距離
+field_iou_min = 0.70           # V1: マスク多角形と field_rect の IoU
+card_corner_dist_ratio = 0.15  # V4: 対角線長に対する比
+card_corner_dist_ratio_color = 0.15  # V4: S1 が色の地図のフォールバックで見つけたカードだけ（辺の位置が数px揺れる）
+card_corner_dist_ratio_sift = 0.15     # SIFT の四角のときの V4 の角の許容（対角線比）
+v4_card_missing_ok = 1
+redetect_erode_px = 3          # V4: マスク内を侵食してから Canny を数える
+digit_absent_max = 0.3         # V4 / A(digits123): マスク領域内での数字パッチ照合の上限〔設計§3 V4 の暫定値・校正待ち〕。これ未満なら痕跡なし
+
+[calibrate]                    # template-build（設計書 5.4 C1）
+min_samples = 5                # 様式ごとのサンプル数。これ未満はエラー（--allow-fewer で明示的に許可）
+align_max_correlation = 0.50   # サンプル同士の ECC 位置合わせの下限（下回ったら別様式としてエラー）
+avg_threshold = 0.5            # 罫線マップの平均を二値化するしきい値（0〜1）
+
+[output]
+png_compression = 3
+preview_jpeg_quality = 90

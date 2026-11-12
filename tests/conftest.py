@@ -21,7 +21,9 @@ from donor_mask.template import load_templates  # noqa: E402
 
 @pytest.fixture(scope="session")
 def cfg():
-    return load_config(DEFAULT_CONFIG)
+    # DONOR_MASK_TEST_CONFIG=config.relaxed.toml で、緩和プロファイルのまま安全性（陰性は review・ok は不変条件を満たす）を確かめられる
+    import os
+    return load_config(os.environ.get("DONOR_MASK_TEST_CONFIG") or DEFAULT_CONFIG)
 
 
 @pytest.fixture(scope="session")

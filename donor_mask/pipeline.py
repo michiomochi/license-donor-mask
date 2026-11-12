@@ -55,7 +55,8 @@ def s1_candidates(img, cfg, templates):
 def s1_log(res) -> dict:
     """S1 のログ。process_file と diagnose_file で同一にする（判定そのものは card にしか無い）。"""
     return {"candidates": [{"quad": c["quad"], "maps": c["maps"], "metrics": c["metrics"]} for c in res["candidates"]],
-            "rejected": res["rejected"], "frame_filled": res["frame_filled"]}
+            "rejected": res["rejected"], "frame_filled": res["frame_filled"],
+            "color_fallback": res.get("color_fallback", False), "color_rejected": res.get("color_rejected"), "grabcut_fallback": res.get("grabcut_fallback", False), "grabcut_rejected": res.get("grabcut_rejected")}
 
 
 def primary_reason(reasons: list) -> str | None:
@@ -144,6 +145,54 @@ def new_rec(path, cfg, tmpl_sha, mode="run"):
         "nondeterministic": {"started_at": None, "elapsed_ms": None},
     }
 
+
+
+def clip_to_card(polygon, quad, inset_px: float):
+    """マスク多角形を、カード四角を inset_px だけ内側へ縮めた形で切る（0 で何もしない）。
+
+    余白（pad）がカード外（背景）へはみ出すと、カードの縁まで黒くなり、塗った後の再検出（V4）が縁を見つけられない。
+    カードの外は塗る必要がない（個人情報は欄の内側にある）ので、はみ出しだけ切る。縮めた四角の内側は変えない。
+    """
+    if inset_px <= 0:
+        return polygon
+    q = np.asarray(quad, np.float64)
+    c = q.mean(axis=0)
+    r = np.sqrt(((q - c) ** 2).sum(axis=1)).mean()
+    qs = c + (q - c) * max(0.0, 1.0 - float(inset_px) / max(r, 1e-9))
+    area, inter = cv2.intersectConvexConvex(np.asarray(polygon, np.float32), qs.astype(np.float32))
+    if area <= 0 or inter is None or len(inter) < 3:
+        return polygon
+    return np.asarray(inter, np.float64).reshape(-1, 2)
+
+
+def apply_m3(img, cands, best, mirror, rs, templates, cfg):
+    """§1.5c M3。mirror_m3 = digits23 のとき、M2（O_MIRROR_AMBIGUOUS）だけが理由で止まる非鏡像の best に限り、
+    印刷数字 2・3 の左右反転照合で曖昧さを解く。通ったら O_MIRROR_AMBIGUOUS を外す（他の理由・O_MIRRORED は残す）。
+    unimplemented のときは従来どおり判定を保留してログに残すだけ。戻りは (mirror, rs)。
+    """
+    mirror = dict(mirror or {})
+    if str(cfg.select.mirror_m3) == "unimplemented":
+        mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
+                        "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+        return mirror, rs
+    waivable = {"O_MIRROR_AMBIGUOUS"}
+    if int(cfg.select.m3_waives_score) == 1:
+        # 数字 2・3 が強く一致する（正しい向きで一意）なら、斜め・低解像度で罫線の ZNCC が低い／別仮説と近いだけの理由は解く。
+        # S4〜S7（ECC 相関・罫線 F・数字 A・V1〜V7）は変えない
+        waivable |= {"O_LOW_SCORE", "O_AMBIGUOUS"}
+    amb = [r for r in rs if r["code"] in waivable]
+    tmpl = next((t for t in templates if best is not None and t.id == best["template"]), None)
+    if not amb or any(r["code"] not in waivable and r["code"] != "O_MIRRORED" for r in rs) \
+            or best is None or best["mirror"] or tmpl is None or not tmpl.positive:
+        mirror["m3"] = {"status": "not_needed", "mode": "digits23"}
+        return mirror, rs
+    quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90][2]
+    norm, _ = orient.normalize(img, quad, cfg)
+    m3 = orient.mirror_m3(norm, tmpl, cfg)
+    mirror["m3"] = dict(m3, mode="digits23")
+    if m3["passed"]:
+        rs = [r for r in rs if r["code"] not in waivable]
+    return mirror, rs
 
 def _add(rec, stage, value):
     rec["stages"][stage] = clean(value)
@@ -251,9 +300,6 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         rec["input"].update(info)
         long_edge = max(img.shape[:2])
         _add(rec, "S0", {"long_edge_px": long_edge})
-        if long_edge < cfg.input.min_long_edge_px:
-            _fail("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
-                          "threshold": cfg.input.min_long_edge_px}])
         # S1
         res = _run("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"]
@@ -268,21 +314,18 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             _fail("S1", [{"code": "C_TOO_MANY_CANDIDATES", "metric": "candidates", "value": len(cands),
                           "threshold": cfg.card.max_candidates}])
         # S2 / S3
-        hyps = _run("S2", s2_score, img, cands, templates, cfg)
+        cands_s = _run("S2", orient.refine_candidates, img, cands, templates, cfg)  # 精密化は S2〜S4 の照合・正規化だけ。ログと V4 は元の S1 の四角
+        hyps = _run("S2", s2_score, img, cands_s, templates, cfg)
         top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
         _add(rec, "S2", {"n_hypotheses": len(hyps), "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")}
                                                             for h in top]})
-        best, second, mirror, rs = _run("S3", s3_select, hyps, cands, cfg, templates)
-        # M3 は v2.1 の一部未実装（黙って無効化しない）。判定を保留していることをログに残す
-        mirror = dict(mirror or {})
-        if str(cfg.select.mirror_m3) == "unimplemented":
-            mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
-                            "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+        best, second, mirror, rs = _run("S3", s3_select, hyps, cands_s, cfg, templates)
+        mirror, rs = apply_m3(img, cands_s, best, mirror, rs, templates, cfg)
         _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
         if rs:
             _fail("S3", rs)
         tmpl = next(t for t in templates if t.id == best["template"])
-        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
         # S4
         norm, M = orient.normalize(img, quad, cfg)
         A, met, rs = _run("S4", s4_align, norm, tmpl, cfg)
@@ -297,9 +340,9 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         e = edge_lengths(quad)
         card_long = float(max((e[0] + e[2]) / 2, (e[1] + e[3]) / 2))
         met, rs = _run("S5", s5_quality, aligned, tmpl, card_long, cfg)
-        if card_long < cfg.input.min_long_edge_px:
+        if card_long < cfg.input.min_card_long_edge_px:
             rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
-                        "threshold": cfg.input.min_long_edge_px}]
+                        "threshold": cfg.input.min_card_long_edge_px}]
         _add(rec, "S5", met)
         if rs:
             _fail("S5", rs)
@@ -314,8 +357,10 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         _add(rec, "S7", met)
         if rs or rect is None:
             _fail("S7", rs)
-        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        polygon = np.array(sig12(clip_to_card(apply_h(P, rect_poly(rect)), cands[best["cand"]]["quad"], float(cfg.mask.clip_card_inset_px))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
+                "card_sift": "sift" in cands[best["cand"]]["maps"],
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon, "fill_bgr": list(fill_bgr)}
@@ -556,9 +601,6 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         rec["input"].update(info)
         long_edge = max(img.shape[:2])
         _add(rec, "S0", {"long_edge_px": long_edge})
-        if long_edge < cfg.input.min_long_edge_px:
-            note("S0", [{"code": "Q_LOW_RES", "metric": "long_edge_px", "value": long_edge,
-                         "threshold": cfg.input.min_long_edge_px}])
         # S1
         res = call("S1", s1_candidates, img, cfg, templates)
         cands = res["candidates"] if res else []
@@ -576,20 +618,18 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if not cands:
             return skip(("S2", "S3", "S4", "S5", "S6", "S7"), "S1")
         # S2 / S3
-        hyps = call("S2", s2_score, img, cands, templates, cfg)
+        cands_s = call("S2", orient.refine_candidates, img, cands, templates, cfg) or cands
+        hyps = call("S2", s2_score, img, cands_s, templates, cfg)
         if hyps is None:
             return skip(("S3", "S4", "S5", "S6", "S7"), "S2")
         top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
         _add(rec, "S2", {"n_hypotheses": len(hyps),
                          "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")} for h in top]})
-        r3 = call("S3", s3_select, hyps, cands, cfg, templates)
+        r3 = call("S3", s3_select, hyps, cands_s, cfg, templates)
         best = None
         if r3:
             best, second, mirror, rs = r3
-            mirror = dict(mirror or {})
-            if str(cfg.select.mirror_m3) == "unimplemented":
-                mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
-                                "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+            mirror, rs = apply_m3(img, cands_s, best, mirror, rs, templates, cfg)
             _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
             if rs:
                 note("S3", rs)
@@ -597,7 +637,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if tmpl is None or not tmpl.positive:  # 対象様式（positive）を選べていない。S4 以降は意味を持たない
             return skip(("S4", "S5", "S6", "S7"), "S3")
         got["tmpl"] = tmpl
-        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
         # S4
         nm = call("S4", orient.normalize, img, quad, cfg)
         r4 = call("S4", s4_align, nm[0], tmpl, cfg) if nm else None
@@ -616,9 +656,9 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         r5 = call("S5", s5_quality, aligned, tmpl, card_long, cfg)
         if r5:
             met, rs = r5
-            if card_long < cfg.input.min_long_edge_px:
+            if card_long < cfg.input.min_card_long_edge_px:
                 rs = rs + [{"code": "Q_LOW_RES", "metric": "card_long_edge_px", "value": card_long,
-                            "threshold": cfg.input.min_long_edge_px}]
+                            "threshold": cfg.input.min_card_long_edge_px}]
             _add(rec, "S5", met)
             if rs:
                 note("S5", rs)
@@ -640,8 +680,10 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if r7 is None or r7[0] is None:
             return
         rect = r7[0]
-        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        polygon = np.array(sig12(clip_to_card(apply_h(P, rect_poly(rect)), cands[best["cand"]]["quad"], float(cfg.mask.clip_card_inset_px))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
+                "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
+                "card_sift": "sift" in cands[best["cand"]]["maps"],
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon,

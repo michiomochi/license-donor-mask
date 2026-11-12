@@ -172,6 +172,15 @@ def background(kind, cw, ch, seed):
     low = cv2.resize(low, (cw, ch), interpolation=cv2.INTER_CUBIC) * 14
     noise = rng.normal(0, 6, (ch, cw, 3)).astype(np.float32)
     bg = np.clip(np.array((96, 82, 70), np.float32) + low + noise, 0, 255)
+    if kind == "clutter":  # 明るさがカードに近い、色の違う大きなまだら（机・床・布・手）。明度の2値化では分けにくい
+        n = rng.normal(0, 1, (ch // 90 + 2, cw // 90 + 2, 3)).astype(np.float32)
+        n = cv2.resize(n, (cw, ch), interpolation=cv2.INTER_CUBIC)
+        base = np.array((150, 170, 190), np.float32)  # BGR。カード色(クリーム)と明度が近い暖色
+        bg = np.clip(base + n * np.array((35, 20, 25), np.float32) + rng.normal(0, 5, (ch, cw, 3)), 0, 255)
+    if kind == "dark":  # 暗い布・机＋カード側へ向かう影
+        yy, xx = np.mgrid[0:ch, 0:cw]
+        grad = (1.0 - 0.5 * (xx / max(cw, 1)))[..., None]
+        bg = np.clip(np.array((60, 45, 40), np.float32) * grad + low * 0.5 + noise, 0, 255)
     if kind == "desk_edge":  # 机の縁（直線）。右下側が明るい
         yy, xx = np.mgrid[0:ch, 0:cw]
         side = (xx * 0.35 + yy) > ch * 0.78

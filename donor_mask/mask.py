@@ -91,7 +91,7 @@ def build_mask_rect(aligned_bgr, tmpl, cues, cfg):
             i = "ltrb".index(s)
             pads[i] += float(k.expand_px)
         new = clip(padded(R, pads), cfg)
-        if any(rect_inter(new, p) > 0 for p in prot):
+        if int(k.expand_hits_protected_ok) == 0 and any(rect_inter(new, p) > 0 for p in prot):
             met["ink_steps"] = steps
             return fail("M_INK_OVERFLOW", "expand_hits_protected", sorted(bad), [])
         rect = new

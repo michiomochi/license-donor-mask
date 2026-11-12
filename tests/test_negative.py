@@ -7,7 +7,7 @@ import pytest
 from conftest import ROOT, assert_ok_invariants, ok_files, reason_codes, run_fixture
 
 import fixtures_gen as fx
-from donor_mask import pipeline, verify
+from donor_mask import imgio, pipeline, verify
 from donor_mask.config import ConfigError, load_config
 
 
@@ -474,3 +474,43 @@ def test_ok_cleanup_failure_keeps_the_path_for_visibility(cfg, tmpls, tmp_path, 
     assert rec["outputs"]["masked"].endswith("__masked.png")
     assert Path(rec["outputs"]["masked"]).exists()
     assert rec["outputs"]["preview"] is None  # 消せた方は null
+
+
+# ---- Issue #4: 解像度ゲートは入力画像の長辺ではなく、S1 後のカード長辺で見る
+def _downscaled(long_edge, seed=3):
+    import cv2
+    f = fx.make({"seed": seed})
+    img, _ = imgio.decode(f.data, 10**9)
+    s = long_edge / max(img.shape[:2])
+    small = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    return small, cv2.imencode(".png", small)[1].tobytes()
+
+
+@pytest.mark.parametrize("long_edge", [700, 500])
+def test_low_res_image_with_large_enough_card_passes_resolution_gate(cfg, tmpls, tmp_path, long_edge):
+    """入力画像の長辺が 800px 未満でも、カード長辺が下限以上なら Q_LOW_RES にならない。"""
+    small, data = _downscaled(long_edge)
+    assert max(small.shape[:2]) < 800
+    t, ts = tmpls
+    d = tmp_path / "in"
+    d.mkdir()
+    p = d / "SYNTHETIC_TEST_a.png"
+    p.write_bytes(data)
+    rec, _ = pipeline.process_file(p, tmp_path / "out", cfg, t, ts)
+    assert "Q_LOW_RES" not in reason_codes(rec)
+    assert rec["stages"]["S5"]["card_long_edge_px"] >= cfg.input.min_card_long_edge_px
+
+
+def test_small_card_is_q_low_res_with_card_metric(cfg, tmpls, tmp_path):
+    """カードが小さい入力は Q_LOW_RES（metric = card_long_edge_px）で review。ok/ には何も出ない。"""
+    _, data = _downscaled(380)
+    t, ts = tmpls
+    d = tmp_path / "in"
+    d.mkdir()
+    p = d / "SYNTHETIC_TEST_a.png"
+    p.write_bytes(data)
+    rec, _ = pipeline.process_file(p, tmp_path / "out", cfg, t, ts)
+    low = [r for r in rec["reasons"] if r["code"] == "Q_LOW_RES"]
+    assert rec["status"] == "review" and low
+    assert low[0]["metric"] == "card_long_edge_px" and low[0]["threshold"] == cfg.input.min_card_long_edge_px
+    assert ok_files(tmp_path / "out") == []

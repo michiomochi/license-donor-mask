@@ -100,7 +100,7 @@ def detect_rule_segments(rul: np.ndarray, f_rules: dict, cfg):
     tol = int(f.f_rules_tol_px)
     smin = float(f.f_rules_support_min)
     met = {"mode": "segments", "found": False, "support_min": smin, "tol_px": tol, "rules": []}
-    xs, ys, ok = [], [], True
+    xs, ys, nmiss = [], [], 0
     for key, band_key, span_key, horizontal in (("h_lines", "y", "x", True), ("v_lines", "x", "y", False)):
         for i, rule in enumerate(f_rules.get(key) or []):
             band, span = rule[band_key], rule[span_key]
@@ -109,14 +109,15 @@ def detect_rule_segments(rul: np.ndarray, f_rules: dict, cfg):
             met["rules"].append({"kind": "h" if horizontal else "v", "index": i,
                                  "band": [float(v) for v in band], "span": [float(v) for v in span],
                                  "support": float(sup), "center_px": center, "hit": n, "found": bool(found)})
-            ok = ok and found
+            nmiss += 0 if found else 1
             if horizontal:
                 ys += [float(band[0]), float(band[1])]
                 xs += [float(span[0]), float(span[1])]
             else:
                 xs += [float(band[0]), float(band[1])]
                 ys += [float(span[0]), float(span[1])]
-    if not met["rules"] or not ok:
+    met["missing"] = nmiss
+    if not met["rules"] or nmiss > int(f.f_rules_missing_max):  # 欠けてよい本数（既定0=全部必要）。欠けた線の期待位置も外接に含める
         return None, met
     rect = (min(xs), min(ys), max(xs), max(ys))
     met.update({"found": True, "rect": list(rect)})
