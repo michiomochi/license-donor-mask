@@ -9,12 +9,11 @@
 ## 使い方
 
 ```bash
-# 初回のみ（Python 3.11 以上）
-python3.11 -m venv .venv && . .venv/bin/activate
-pip install -r requirements.txt
+# 初回のみ（uv が Python 3.11 以上と依存を用意します）
+uv sync
 
 # 実行（--in は写真のフォルダ。元の写真は変更しません）
-python -m donor_mask run --in ./inbox --out ./out --config config.tolerant.toml
+uv run python -m donor_mask run --in ./inbox --out ./out --config config.tolerant.toml
 ```
 
 ## 結果
@@ -34,7 +33,7 @@ python -m donor_mask run --in ./inbox --out ./out --config config.tolerant.toml
 ## 本番で確認するとき
 
 ```bash
-python -m donor_mask aggregate --logs ./out --mode run
+uv run python -m donor_mask aggregate --logs ./out --mode run
 ```
 
 ok / review の件数と、review の理由別の件数だけが出ます（画像・ファイル名は出ません）。共有はこの集計だけにしてください。
