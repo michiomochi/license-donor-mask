@@ -1,4 +1,4 @@
-"""CLI: python -m donor_mask {run,rectify,verify,template-build}。calibrate / make-fixtures は v1 では未実装。
+"""CLI: python -m donor_mask {run,rectify,verify,template-build,aggregate}。calibrate / make-fixtures は v1 では未実装。
 
 終了コード: 0=全件 ok / 3=review（または件単位の error）を含む / 1=設定・テンプレート不正や I/O の致命的エラー
 """
@@ -13,7 +13,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from . import build, card, imgio, orient, pipeline, verify
+from . import aggregate, build, card, imgio, orient, pipeline, verify
 from .config import DEFAULT_CONFIG, DEFAULT_TEMPLATES, ConfigError, load_config
 from .geom import hypothesis_quads
 from .template import load_templates
@@ -205,6 +205,25 @@ def cmd_verify(a) -> int:
     return 0 if vr["pass"] else 3
 
 
+def cmd_aggregate(a) -> int:
+    """run のログから件数と分布だけを出す（画像・パス・job_id・ファイル名は出さない）。設定やテンプレートは読まない。"""
+    src = Path(a.logs).expanduser()
+    if not src.is_dir():
+        print(f"[error] ログのディレクトリがありません: {src}", file=sys.stderr)
+        return 1
+    files = aggregate.find_log_files(src)
+    recs, skipped = aggregate.load_logs(files)
+    if not recs:
+        print(f"[error] 1件ごとのログ(*.json)がありません（読めない/形式違い: {skipped}）", file=sys.stderr)
+        return 1
+    agg = aggregate.aggregate(recs, a.mode)
+    if a.json:
+        print(json.dumps(dict(agg, skipped=skipped), ensure_ascii=False, indent=2))
+    else:
+        print(aggregate.format_text(agg, skipped))
+    return 0
+
+
 def build_parser():
     ap = argparse.ArgumentParser(prog="donor_mask", description="免許証裏面の臓器提供意思表示欄をマスクする（ローカル処理のみ・fail-closed）")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -244,6 +263,10 @@ def build_parser():
                     help="min_samples 未満でも暫定テンプレートとして書く（min_samples_met=false）")
     tb.add_argument("--min-samples", type=int, default=None, help="既定は config.toml [calibrate] min_samples")
     common(tb)
+    ag = sub.add_parser("aggregate", help="run のログから ok/review 件数・理由コード別件数・ZNCC/ECC/解像度の分布だけを出す（画像は出さない）")
+    ag.add_argument("--logs", required=True, help="run の出力先（その下の logs/）または logs ディレクトリ")
+    ag.add_argument("--mode", choices=("any", "run", "diagnostic"), default="any", help="集計対象のログの mode。既定 any")
+    ag.add_argument("--json", action="store_true", help="JSON で出す")
     for d in DEFERRED:
         sub.add_parser(d, help="v1 では未実装（DESIGN.md 参照）")
     return ap
@@ -256,7 +279,7 @@ def main(argv=None) -> int:
         return 1
     try:
         return {"run": cmd_run, "rectify": cmd_rectify, "verify": cmd_verify,
-                "template-build": cmd_template_build}[a.cmd](a)
+                "template-build": cmd_template_build, "aggregate": cmd_aggregate}[a.cmd](a)
     except ConfigError as e:
         print(f"[error] 設定/テンプレート不正: {e}", file=sys.stderr)
         return 1

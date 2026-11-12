@@ -102,6 +102,9 @@ python -m donor_mask template-build --in ./calib_samples --out ./templates/my_ba
 
 # 独立再検証（原本・マスク済みPNG・ログから V1〜V7 をやり直す）
 python -m donor_mask verify --orig ./inbox/a.jpg --masked ./out/ok/<job_id>__masked.png --log ./out/logs/<job_id>.json
+
+# 集計（画像は出さない）: run のログから ok/review 件数・理由コード別件数・ZNCC/ECC/解像度の分布だけを出す
+python -m donor_mask aggregate --logs ./out [--mode run|diagnostic|any] [--json]
 ```
 
 `--config`（既定 `config.toml`）と `--templates`（既定 `templates/`）で差し替えられます。しきい値は全て `config.toml`、設定ファイルの sha256 は毎回ログに残ります。
@@ -123,6 +126,19 @@ out/logs/batch_*.json            バッチ集計
 - `run --diagnostic` は上記の `ok/` `review/` を作りません（診断は `logs/` だけ）。同じ入力は通常 run と同じ `job_id` になるので、通常 run と同じ `--out` に出すと `X_OUTPUT_EXISTS`（既存ログは上書きしない）になります。別の出力先を使ってください。
 - 終了コード: `0` 全件 ok / `3` review（または件単位の error）を含む / `1` 設定・テンプレート不正や I/O の致命的エラー、原本が処理中に変化した場合。
 - `--fill noise`、JPEG 出力、ぼかし・モザイク・半透明は**実装していません**（秘匿性は上がらず、「欄外の差分ゼロ」「塗りの一様性」を厳密に検証できなくなるため）。
+
+### ログの集計（`aggregate`。本番環境で人が基準を決める用）
+
+本番の AWS 内にある実写真に `run`（必要なら `--diagnostic`）をかけたあと、そのログだけから件数と分布を出します。**画像・元ファイル名・パス・job_id・理由の値（文字列）は出力しません**（数と固定の区切りだけ）。実行時に AI は使わず、集計の定義は固定で、特定の画像に合わせた調整はありません。設定・テンプレートは読みません。
+
+- 入力: `--logs` に `run` の出力先（その下の `logs/`）か `logs/` を直接。サブディレクトリは掘らず、`batch_*.json` と読めない/形式違いの JSON は数えません（除外した数だけ出します）。
+- 出すもの:
+  - `status`（ok/review/error）の件数と ok 率、`mode`（run/diagnostic）の件数
+  - 理由コード別件数（`reasons` の `code`。1件に同じコードが複数あっても1回）と一次理由（`primary_reason`）別件数
+  - 分布（全体・status 別。要約: min/p5/p25/p50/p75/p95/max と固定幅のヒストグラム）: **ZNCC**（S3 の best）、**ECC 相関**（S4 の `correlation`）、**カード長辺 px**（S5。S1 後のカード長辺。`Q_LOW_RES` の判定値）、**入力長辺 px**（S0）
+- 各分布の `n` は「その段まで進んでログに値がある件数」です（S1 で止まった件は ZNCC/ECC/カード長辺に入りません）。ヒストグラムの区切りは ZNCC/ECC が 0.1 刻み、解像度が 0/200/400/600/800/1200/1600/2400/3200/4800（範囲外は `<lo` / `>=hi`）で固定。
+- `--diagnostic` のログは status が常に review なので、ok 率の判断は `--mode run` のログで行い、全段の値の分布は diagnostic のログで見ます（`--mode diagnostic`）。
+- 基準を決めるときの注意: 分布は「ok/review の別」と「理由コード」を見比べるための材料です。この集計はしきい値を自動で提案・変更しません（変更は `config.toml` を人が編集し、`config_sha256` がログに残ります）。
 
 ## テスト
 
