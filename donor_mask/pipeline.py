@@ -147,6 +147,24 @@ def new_rec(path, cfg, tmpl_sha, mode="run"):
 
 
 
+def clip_to_card(polygon, quad, inset_px: float):
+    """マスク多角形を、カード四角を inset_px だけ内側へ縮めた形で切る（0 で何もしない）。
+
+    余白（pad）がカード外（背景）へはみ出すと、カードの縁まで黒くなり、塗った後の再検出（V4）が縁を見つけられない。
+    カードの外は塗る必要がない（個人情報は欄の内側にある）ので、はみ出しだけ切る。縮めた四角の内側は変えない。
+    """
+    if inset_px <= 0:
+        return polygon
+    q = np.asarray(quad, np.float64)
+    c = q.mean(axis=0)
+    r = np.sqrt(((q - c) ** 2).sum(axis=1)).mean()
+    qs = c + (q - c) * max(0.0, 1.0 - float(inset_px) / max(r, 1e-9))
+    area, inter = cv2.intersectConvexConvex(np.asarray(polygon, np.float32), qs.astype(np.float32))
+    if area <= 0 or inter is None or len(inter) < 3:
+        return polygon
+    return np.asarray(inter, np.float64).reshape(-1, 2)
+
+
 def apply_m3(img, cands, best, mirror, rs, templates, cfg):
     """§1.5c M3。mirror_m3 = digits23 のとき、M2（O_MIRROR_AMBIGUOUS）だけが理由で止まる非鏡像の best に限り、
     印刷数字 2・3 の左右反転照合で曖昧さを解く。通ったら O_MIRROR_AMBIGUOUS を外す（他の理由・O_MIRRORED は残す）。
@@ -339,9 +357,10 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         _add(rec, "S7", met)
         if rs or rect is None:
             _fail("S7", rs)
-        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        polygon = np.array(sig12(clip_to_card(apply_h(P, rect_poly(rect)), cands[best["cand"]]["quad"], float(cfg.mask.clip_card_inset_px))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
                 "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
+                "card_sift": "sift" in cands[best["cand"]]["maps"],
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon, "fill_bgr": list(fill_bgr)}
@@ -661,9 +680,10 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if r7 is None or r7[0] is None:
             return
         rect = r7[0]
-        polygon = np.array(sig12(apply_h(P, rect_poly(rect))))
+        polygon = np.array(sig12(clip_to_card(apply_h(P, rect_poly(rect)), cands[best["cand"]]["quad"], float(cfg.mask.clip_card_inset_px))))
         geom = {"template_id": tmpl.id, "card_quad": order_quad(cands[best["cand"]]["quad"]),
                 "card_color_fallback": any(str(m).startswith("lab_") for m in cands[best["cand"]]["maps"]),
+                "card_sift": "sift" in cands[best["cand"]]["maps"],
                 "M_n2o": M10, "ecc_A": A10, "P_t2o": P,
                 "cues": {k: (None if cues.get(k) is None else cues[k]) for k in ("T", "F", "A", "A_boxes", "window", "R")},
                 "mask_rect": [float(v) for v in rect], "mask_polygon": polygon,

@@ -123,12 +123,19 @@ def v4_redetect(masked, geom: dict, tmpl, cfg, mask):
     # templates=None: V4 が使うのは candidates だけ。枠いっぱいの照合（C_FRAME_FILLED の判定）は不要なので明示的に省く
     # 色味で見つけたカード（S1 のフォールバック）は辺の位置が数px揺れるので、許容だけ別キーで広げる
     ratio = v.card_corner_dist_ratio_color if geom.get("card_color_fallback") else v.card_corner_dist_ratio
-    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5),
+    found = cardmod.find_candidates(masked, cfg.override("card", consensus_min_maps=1, edge_support_min=0.5, sift_fallback=0),
                                     None)["candidates"]
     dmin = min((quad_dist(logged, c["quad"]) for c in found), default=1e9)
     res["card"] = {"n_candidates": len(found), "min_corner_dist_px": dmin,
                    "limit_px": ratio * quad_diag(logged)}
     card_ok = dmin <= res["card"]["limit_px"]
+    if geom.get("card_sift"):
+        # 特徴点（SIFT）の射影で求めた四角は輪郭に基づかない。輪郭が取れない写真向けなので、再検出で輪郭が見つからなくても
+        # 「カード四辺が壊れた」とは言えない。輪郭が見つかったときは、広めの許容（verify.card_corner_dist_ratio_sift）で一致を見る。
+        # 塗り残し・はみ出しは V1〜V3・V5・V7 と下の点検（探索窓・マスク内エッジ）が引き続き見る
+        res["card"]["sift"] = True
+        res["card"]["limit_px"] = float(v.card_corner_dist_ratio_sift) * quad_diag(logged)
+        card_ok = len(found) == 0 or dmin <= res["card"]["limit_px"]
     # 探索窓内にチェックボックス単体候補・3連が残っていない
     P = np.asarray(geom["P_t2o"], np.float64)
     W, H = int(cfg.canvas.width), int(cfg.canvas.height)

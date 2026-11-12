@@ -13,6 +13,12 @@ card_aspect = 1.585
 [card]                         # S1
 work_long_edge = 1200
 canny_low = 40
+sift_fallback = 0
+sift_work_long_edge = 1000
+sift_n_features = 4000
+sift_ratio = 0.8
+sift_ransac_px = 6.0
+sift_min_inliers = 60
 canny_high = 120
 canny_dilate = 3
 edge_support_tol_color_px = 5.0 # 同フォールバックでの辺の支持の許容（明度差が小さい辺は Canny の位置が揺れる）
@@ -114,6 +120,7 @@ digit_nms_px = 7               # A(digits123): 極大の非極大抑制の半径
 digit_max_peaks = 120          # A(digits123): 1パッチあたりの極大数の上限（超えたら F_ANCHOR_MULTIPLE）
 
 [mask]                         # S7
+clip_card_inset_px = 0         # >0: マスクをカード四角（この px 縮めた形）の内側で切る。0 で無効（既定）                         # S7
 pad_x_min_px = 12
 pad_x_ratio = 0.06
 pad_y_min_px = 12
@@ -143,6 +150,7 @@ inside_min_dist_px = 6.0       # V1: 正規化座標での内側距離
 field_iou_min = 0.70           # V1: マスク多角形と field_rect の IoU
 card_corner_dist_ratio = 0.02  # V4: 対角線長に対する比
 card_corner_dist_ratio_color = 0.02  # V4: S1 が色の地図のフォールバックで見つけたカードだけ（辺の位置が数px揺れる）
+card_corner_dist_ratio_sift = 0.05     # SIFT の四角のときの V4 の角の許容（対角線比）
 redetect_erode_px = 3          # V4: マスク内を侵食してから Canny を数える
 digit_absent_max = 0.3         # V4 / A(digits123): マスク領域内での数字パッチ照合の上限〔設計§3 V4 の暫定値・校正待ち〕。これ未満なら痕跡なし
 

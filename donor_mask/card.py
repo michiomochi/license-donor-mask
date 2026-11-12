@@ -196,6 +196,67 @@ def geometry_check(quad, shape, dist_to_edge, cfg):
     return None, m
 
 
+_SIFT_CACHE: dict = {}
+
+
+def sift_candidates(img, cfg, templates):
+    """4段目のフォールバック: 特徴点（SIFT）の対応と RANSAC の射影で、テンプレートのカード全面が画像のどこに写るかを求める。
+
+    学習なし（OpenCV の古典手法。MIDV の基準手法と同じ考え方）。罫線の照合が落ちる斜め・低解像度の写真向け。
+    採用条件は全部AND: 陽性テンプレートごとに RANSAC のインライアが card.sift_min_inliers 以上、射影の向きが正（左右反転でない）、
+    4角が正しい凸四角形、幾何ゲート（面積・角度・遠近・縁・縦横比。辺の支持だけは輪郭を使わないので除く）。
+    返す候補は maps=["sift"] で、S2 以降（罫線の照合・S3 の向き・S4 の ECC・V1〜V7）は他の候補と同じに通る。
+    戻りは (候補のリスト, ログ用の dict)。
+    """
+    c = cfg.card
+    log = {"tried": 0, "best_inliers": 0}
+    if not templates:
+        return [], log
+    h0, w0 = img.shape[:2]
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if img.ndim == 3 else img
+    sc = float(c.sift_work_long_edge) / max(h0, w0)  # 小さい画像は拡大、大きい画像は縮小して、特徴点の尺度をそろえる
+    g = cv2.resize(gray, None, fx=sc, fy=sc, interpolation=cv2.INTER_CUBIC if sc > 1 else cv2.INTER_AREA)
+    sift = cv2.SIFT_create(int(c.sift_n_features))
+    ki, di = sift.detectAndCompute(g, None)
+    if di is None or len(ki) < 8:
+        return [], log
+    W, H = int(cfg.canvas.width), int(cfg.canvas.height)
+    corners = np.array([[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1]], np.float64)
+    cfg_g = cfg.override("card", edge_support_min=0.0, border_margin_px=0.0, border_margin_ratio=0.0)  # 縁に接してよい（外へはみ出す＝カードが切れているものは落ちる）
+    out = []
+    for t in templates:
+        if not t.positive or t.print_map is None:
+            continue
+        if t.id not in _SIFT_CACHE:
+            _SIFT_CACHE[t.id] = sift.detectAndCompute(255 - t.print_map, None)  # print_map は印刷=白
+        kt, dt = _SIFT_CACHE[t.id]
+        if dt is None or len(kt) < 8:
+            continue
+        log["tried"] += 1
+        m = cv2.BFMatcher().knnMatch(dt, di, k=2)
+        good = [a for a, b in (x for x in m if len(x) == 2) if a.distance < float(c.sift_ratio) * b.distance]
+        if len(good) < 8:
+            continue
+        cv2.setRNGSeed(0)  # RANSAC の乱数を固定（同じ入力は同じ結果）
+        Hm, mask = cv2.findHomography(np.float32([kt[a.queryIdx].pt for a in good]),
+                                      np.float32([ki[a.trainIdx].pt for a in good]), cv2.RANSAC, float(c.sift_ransac_px))
+        n = int(mask.sum()) if mask is not None else 0
+        log["best_inliers"] = max(log["best_inliers"], n)
+        if Hm is None or n < int(c.sift_min_inliers) or np.linalg.det(Hm[:2, :2]) <= 0:
+            continue
+        pts = np.c_[corners, np.ones(4)] @ Hm.T
+        q = (pts[:, :2] / pts[:, 2:3]) / sc
+        if not np.all(np.isfinite(q)):
+            continue
+        code, met = geometry_check(q, img.shape, np.zeros(img.shape[:2], np.float32), cfg_g)
+        if code is not None:
+            log["rejected"] = code
+            continue
+        met = dict(met, sift_inliers=n, sift_good=len(good), sift_template=t.id)
+        out.append({"quad": q, "maps": ["sift"], "metrics": met})
+    return out, log
+
+
 def find_candidates(img, cfg, templates) -> dict:
     """{"candidates":[{"quad":(4,2) 元画像座標・時計回り, "maps":[...], "metrics":{...}}], "rejected":{code:n},
     "frame_filled": {...}, ...}
@@ -326,7 +387,16 @@ def find_candidates(img, cfg, templates) -> dict:
             passed, rejected, n_outline, cands = passed3, rejected3, n_outline3, cands3
         else:
             grabcut_rejected = rejected3
-    if n_outline == 0:
+    sift_pass, sift_log = False, None
+    if int(c.sift_fallback) >= 1 and templates and (not cands or int(c.sift_fallback) >= 2):
+        # 1: 他の経路が0件のときだけ。2: SIFT の四角が取れたら、それに置き換える。3: 輪郭の候補に足す
+        sift_pass = True
+        sc, sift_log = sift_candidates(img, cfg, templates)
+        if int(c.sift_fallback) == 2:  # 置き換え
+            cands = sc or cands
+        else:  # 3: 輪郭の候補に足す（S2 の罫線照合で最良の候補を選ぶ）。ほぼ同じ四角は足さない
+            cands = list(cands) + [q for q in sc if all(quad_dist(q["quad"], x["quad"]) > 0.01 * quad_diag(q["quad"]) for x in cands)]
+    if n_outline == 0 and not cands:
         frame = {"status": "no_outline"}
     elif cands:
         frame = {"status": "has_candidates", "n_outline": n_outline}  # 候補があれば照合しない（コストを使わない）
@@ -339,4 +409,5 @@ def find_candidates(img, cfg, templates) -> dict:
         # not_filled: 外枠は画像の縁でカードではない。コードは付けず、根拠は frame に残る
     return {"candidates": cands, "rejected": rejected, "work_scale": s, "n_passed_raw": len(passed),
             "frame_filled": frame, "color_fallback": color_pass, "color_rejected": color_rejected,
-            "grabcut_fallback": grabcut_pass, "grabcut_rejected": grabcut_rejected}
+            "grabcut_fallback": grabcut_pass, "grabcut_rejected": grabcut_rejected,
+            "sift_fallback": sift_pass, "sift": sift_log}
