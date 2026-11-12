@@ -65,7 +65,7 @@ _REQUIRED = {
              "frame_filled_inset_scales"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
     "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3", "m3_min_score", "m3_margin", "m3_search_px", "m3_waives_score"],
-    "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
+    "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "refine_iters", "refine_max_move_ratio", "max_translation_ratio",
             "scale_min", "scale_max", "max_rotation_deg"],
     "quality": ["glare_level", "glare_max_ratio", "blur_min_laplacian_var", "contrast_min_p95_p5"],
     "field": ["frame_support_min", "frame_support_band_px", "frame_min_iou", "f_rules_support_min", "f_rules_tol_px",

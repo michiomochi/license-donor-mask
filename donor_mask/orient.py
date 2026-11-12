@@ -234,6 +234,87 @@ def refine_alignment(norm, template, cfg):
     return A, met, reasons
 
 
+def refine_quad(img, quad, template, cfg):
+    """S3 と S4 の間の四角の精密化（ecc.refine_iters 回。0 で何もしない）。
+
+    S1 の外形は数%ずれることがある（斜め・低解像度）。S3 で向きとテンプレートが決まった後に、罫線マップ同士の
+    ECC（MOTION_HOMOGRAPHY）で四角の4角を動かし、正規化画像をテンプレートへ寄せる。相関が上がり、かつ4角の移動が
+    対角線の ecc.refine_max_move_ratio 以内のときだけ採用する（それ以外は元の四角のまま）。S4 以降の判定
+    （相関・平行移動・拡大・回転）は変わらない。V4 は S1 の四角と比べるので、ここで動かした四角はログの card_quad に影響しない。
+    戻りは (四角, ログ用の dict)。
+    """
+    n = int(cfg.ecc.refine_iters)
+    q0 = np.asarray(quad, np.float64)
+    if n <= 0:
+        return q0, None
+    e = cfg.ecc
+    W, H = int(cfg.canvas.width), int(cfg.canvas.height)
+    ign = template.ignore_rects
+    tpl_f = cv2.GaussianBlur(layout.zero_rects(template.ruling, ign).astype(np.float32) / 255.0, (0, 0), float(e.blur_sigma))
+    corners = np.array([[0, 0], [W - 1, 0], [W - 1, H - 1], [0, H - 1]], np.float64)
+    diag = float(np.hypot(*(q0.max(axis=0) - q0.min(axis=0))))
+    q, log = q0.copy(), []
+    crit = (cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, int(e.iterations), float(e.eps))
+    prev = None
+    for _ in range(n):
+        norm, M = normalize(img, q, cfg)
+        inp_f = cv2.GaussianBlur(layout.zero_rects(layout.ruling_map(norm, cfg), ign).astype(np.float32) / 255.0,
+                                 (0, 0), float(e.blur_sigma))
+        try:
+            cc, warp = cv2.findTransformECC(tpl_f, inp_f, np.eye(3, dtype=np.float32), cv2.MOTION_HOMOGRAPHY, crit,
+                                            None, int(e.gauss_filt_size))
+        except cv2.error:
+            log.append({"error": True})
+            break
+        if prev is not None and cc <= prev:
+            log.append({"cc": float(cc), "stop": "no_gain"})
+            break
+        P = np.asarray(M, np.float64) @ affine3(warp)
+        pts = np.c_[corners, np.ones(4)] @ P.T
+        qn = pts[:, :2] / pts[:, 2:3]
+        if not np.all(np.isfinite(qn)) or float(np.abs(qn - q0).max()) > float(e.refine_max_move_ratio) * diag:
+            log.append({"cc": float(cc), "stop": "too_far"})
+            break
+        q, prev = qn, float(cc)
+        log.append({"cc": float(cc)})
+    return q, {"iters": log, "moved_px": float(np.abs(q - q0).max())}
+
+
+def refine_candidates(img, cands, templates, cfg):
+    """S2 の前に、各候補の四角を「最も一致する仮説」で精密化した版を返す（ecc.refine_iters=0 なら cands そのまま）。
+
+    S1 の外形が数%ずれると、罫線の ZNCC が低く出て S3 が O_LOW_SCORE / O_AMBIGUOUS になる。そこで候補ごとに
+    8仮説×陽性テンプレートの最大 ZNCC の仮説を選び、その向きの四角を refine_quad で寄せ、同じ仮説番号で同じ四角に
+    なる基準の四角へ戻して返す。S2・S3・S4 の正規化にだけ使い、ログの card_quad と V4 は元の S1 の四角のまま。
+    採用された精密化は cand["refined"] に記録する。
+    """
+    if int(cfg.ecc.refine_iters) <= 0:
+        return cands
+    out = []
+    pos = [t for t in templates if t.positive]
+    for ci, c in enumerate(cands):
+        hs = [h for h in score_hypotheses(img, [c], pos, cfg)]
+        best = min(hs, key=_rank)
+        tmpl = next(t for t in pos if t.id == best["template"])
+        idx = best["rot"] // 90 + (4 if best["mirror"] else 0)
+        hq = hypothesis_quads(c["quad"])[idx][2]
+        rq, log = refine_quad(img, hq, tmpl, cfg)
+        if not log or not log["iters"] or log["moved_px"] < 1e-6:
+            out.append(c)
+            continue
+        base = None
+        for k in range(8):  # rq を基準の四角（回転・左右反転の8通り）へ戻す
+            cand_base = np.roll(rq, k % 4, axis=0)[::-1 if k >= 4 else 1]
+            if float(np.abs(hypothesis_quads(cand_base)[idx][2] - rq).max()) < 1e-6:
+                base = cand_base
+                break
+        if base is None:
+            out.append(c)
+            continue
+        out.append(dict(c, quad=np.asarray(base, np.float64), refined=log))
+    return out
+
+
 def template_to_orig(M_n2o, A) -> np.ndarray:
     """テンプレート座標 -> 元画像座標 = (正規化->元) ∘ (テンプレート->正規化)。"""
     P = np.asarray(M_n2o, np.float64) @ affine3(A)

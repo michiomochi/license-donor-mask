@@ -296,17 +296,18 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
             _fail("S1", [{"code": "C_TOO_MANY_CANDIDATES", "metric": "candidates", "value": len(cands),
                           "threshold": cfg.card.max_candidates}])
         # S2 / S3
-        hyps = _run("S2", s2_score, img, cands, templates, cfg)
+        cands_s = _run("S2", orient.refine_candidates, img, cands, templates, cfg)  # 精密化は S2〜S4 の照合・正規化だけ。ログと V4 は元の S1 の四角
+        hyps = _run("S2", s2_score, img, cands_s, templates, cfg)
         top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
         _add(rec, "S2", {"n_hypotheses": len(hyps), "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")}
                                                             for h in top]})
-        best, second, mirror, rs = _run("S3", s3_select, hyps, cands, cfg, templates)
-        mirror, rs = apply_m3(img, cands, best, mirror, rs, templates, cfg)
+        best, second, mirror, rs = _run("S3", s3_select, hyps, cands_s, cfg, templates)
+        mirror, rs = apply_m3(img, cands_s, best, mirror, rs, templates, cfg)
         _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
         if rs:
             _fail("S3", rs)
         tmpl = next(t for t in templates if t.id == best["template"])
-        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
         # S4
         norm, M = orient.normalize(img, quad, cfg)
         A, met, rs = _run("S4", s4_align, norm, tmpl, cfg)
@@ -598,17 +599,18 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if not cands:
             return skip(("S2", "S3", "S4", "S5", "S6", "S7"), "S1")
         # S2 / S3
-        hyps = call("S2", s2_score, img, cands, templates, cfg)
+        cands_s = call("S2", orient.refine_candidates, img, cands, templates, cfg) or cands
+        hyps = call("S2", s2_score, img, cands_s, templates, cfg)
         if hyps is None:
             return skip(("S3", "S4", "S5", "S6", "S7"), "S2")
         top = sorted(hyps, key=lambda h: -h["zncc"])[:12]
         _add(rec, "S2", {"n_hypotheses": len(hyps),
                          "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")} for h in top]})
-        r3 = call("S3", s3_select, hyps, cands, cfg, templates)
+        r3 = call("S3", s3_select, hyps, cands_s, cfg, templates)
         best = None
         if r3:
             best, second, mirror, rs = r3
-            mirror, rs = apply_m3(img, cands, best, mirror, rs, templates, cfg)
+            mirror, rs = apply_m3(img, cands_s, best, mirror, rs, templates, cfg)
             _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
             if rs:
                 note("S3", rs)
@@ -616,7 +618,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         if tmpl is None or not tmpl.positive:  # 対象様式（positive）を選べていない。S4 以降は意味を持たない
             return skip(("S4", "S5", "S6", "S7"), "S3")
         got["tmpl"] = tmpl
-        quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
+        quad = hypothesis_quads(cands_s[best["cand"]]["quad"])[best["rot"] // 90 + (4 if best["mirror"] else 0)][2]
         # S4
         nm = call("S4", orient.normalize, img, quad, cfg)
         r4 = call("S4", s4_align, nm[0], tmpl, cfg) if nm else None
