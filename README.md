@@ -247,3 +247,11 @@ MIT License, Copyright (c) 2026 Masayoshi Michikawa。見本画像（上記2枚�
 - 無効化: `config.toml` の `grabcut_fallback = 0`。
 - ログ: `grabcut_fallback`（動いたか）、`grabcut_rejected`（候補にならなかった理由）。
 - 限界: 色つきまだら背景で大きく（約20°）傾いた写真などは取れません。取れない場合は review になり、誤って塗ることはありません。
+
+## M3（印刷数字 2・3 の左右反転照合）
+
+`config.toml` の `[select] mirror_m3` は `"unimplemented"`（既定。M2 だけで判定し、M3 は保留をログに残す）か `"digits23"` を取ります。
+
+- `digits23`: 非鏡像の best が `O_MIRROR_AMBIGUOUS` で止まるとき、正規化画像の数字「2」「3」の位置で、通常向きと左右反転のパッチ照合を比べます。両方の数字で通常 ≥ `m3_min_score`（0.70）かつ 通常 − 反転 ≥ `m3_margin`（0.15）なら曖昧さを解きます。罫線は左右ほぼ対称で区別できませんが、数字は区別できます。
+- `m3_waives_score = 1`（緩和。既定は 0。`config.m3.toml` でだけ 1）: M3 が通ったとき `O_LOW_SCORE` / `O_AMBIGUOUS` も解きます。斜め・低解像度で罫線の ZNCC が低いだけの写真向けです。S4〜S7（ECC 相関・罫線 F・数字 A・V1〜V7）と鏡像そのもの（`O_MIRRORED`）は変わりません。
+- 実測（素材画像4枚。標本が少ない）: 非鏡像の仮説で 通常 0.82〜0.94 / 反転 0.63〜0.67、鏡像の仮説で 通常≒反転。閾値は要校正です。

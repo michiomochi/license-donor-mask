@@ -64,7 +64,7 @@ _REQUIRED = {
              "max_candidates", "frame_filled_aspect_tol", "frame_filled_corner_px", "frame_filled_zncc_min",
              "frame_filled_inset_scales"],
     "signature": ["block_size", "c", "kernel_h", "kernel_v", "out_width", "out_height", "blur_sigma"],
-    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3"],
+    "select": ["min_zncc", "min_margin", "tie_eps", "multi_card_iou", "family_iou", "mirror_margin", "mirror_m3", "m3_min_score", "m3_margin", "m3_search_px", "m3_waives_score"],
     "ecc": ["iterations", "eps", "blur_sigma", "gauss_filt_size", "min_correlation", "max_translation_ratio",
             "scale_min", "scale_max", "max_rotation_deg"],
     "quality": ["glare_level", "glare_max_ratio", "blur_min_laplacian_var", "contrast_min_p95_p5"],
@@ -87,7 +87,7 @@ _REQUIRED = {
 }
 
 # 文字列で持つ設定キー（列挙値）。数値・bool を許すと「無効化」できてしまうものだけをここに置く。
-_STRING_KEYS = {("select", "mirror_m3"): ("unimplemented",)}
+_STRING_KEYS = {("select", "mirror_m3"): ("unimplemented", "digits23")}
 
 
 def load_config(path=None) -> Config:
@@ -170,9 +170,9 @@ def _validate_mirror_gate(raw: dict):
         raise ConfigError(f"[select] mirror_margin は正の数（M2 を無効化できない）: {s['mirror_margin']!r}")
     if not (0.0 < float(s["family_iou"]) <= 1.0):
         raise ConfigError(f"[select] family_iou は (0, 1]: {s['family_iou']!r}")
-    if s["mirror_m3"] != "unimplemented":
-        raise ConfigError(f"[select] mirror_m3 は \"unimplemented\" のみ（M3 は未実装。"
-                          f"無効化・別の値は不可）: {s['mirror_m3']!r}")
+    if s["mirror_m3"] not in ("unimplemented", "digits23"):
+        raise ConfigError(f"[select] mirror_m3 は \"unimplemented\" か \"digits23\" のみ（無効化・別の値は不可）"
+                          f": {s['mirror_m3']!r}")
     if not (0.0 < float(f["f_rules_support_min"]) <= 1.0):
         raise ConfigError(f"[field] f_rules_support_min は (0, 1]: {f['f_rules_support_min']!r}")
     if int(f["f_rules_tol_px"]) < 0:

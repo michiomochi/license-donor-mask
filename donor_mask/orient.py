@@ -160,6 +160,38 @@ def select_unique(hyps, candidates, cfg, templates=None):
     return best, second, mirror, reasons
 
 
+def mirror_m3(norm, template, cfg) -> dict:
+    """§1.5c M3: 印刷数字「2」「3」の左右反転照合。best の正規化画像で、数字パッチを通常の向きと左右反転の向きで探す。
+
+    「2」「3」は左右非対称なので、正しい向きなら通常パッチの照合値が高く反転パッチは下がる（罫線は左右ほぼ対称で区別できない）。
+    探索窓は数字の中心の周り ±m3_search_px（位置合わせ前なので少し広く取る）。両方の数字で
+    通常 ≥ m3_min_score かつ（通常 − 反転）≥ m3_margin のときだけ passed。数字パッチを持たないテンプレートは判定不能（passed=False）。
+    """
+    a = template.meta.get("anchor") or {}
+    patches = getattr(template, "digit_patches", None) or []
+    if template.meta.get("anchor_type") != "digits123" or len(patches) != 3:
+        return {"status": "not_applicable", "passed": False}
+    s = cfg.select
+    g = cv2.cvtColor(norm, cv2.COLOR_BGR2GRAY) if norm.ndim == 3 else norm
+    r = int(s.m3_search_px)
+    rows = []
+    for i in (1, 2):
+        p = np.asarray(patches[i], np.float32)
+        h, w = p.shape
+        cx, cy = a["centers"][i]
+        x0, y0 = int(cx - w / 2 - r), int(cy - h / 2 - r)
+        x1, y1 = int(cx + w / 2 + r), int(cy + h / 2 + r)
+        crop = g[max(y0, 0):y1, max(x0, 0):x1].astype(np.float32)
+        if crop.shape[0] < h or crop.shape[1] < w:
+            return {"status": "out_of_range", "passed": False}
+        normal = float(cv2.matchTemplate(crop, p, cv2.TM_CCOEFF_NORMED).max())
+        flipped = float(cv2.matchTemplate(crop, np.ascontiguousarray(p[:, ::-1]), cv2.TM_CCOEFF_NORMED).max())
+        rows.append({"digit": i + 1, "normal": normal, "flipped": flipped})
+    ok = all(x["normal"] >= float(s.m3_min_score) and x["normal"] - x["flipped"] >= float(s.m3_margin) for x in rows)
+    return {"status": "checked", "passed": bool(ok), "digits": rows, "min_score": float(s.m3_min_score),
+            "margin": float(s.m3_margin)}
+
+
 def refine_alignment(norm, template, cfg):
     """S4。罫線マップ同士の ECC(MOTION_AFFINE)。(A 2x3 | None, metrics, reasons)。
 

@@ -146,6 +146,36 @@ def new_rec(path, cfg, tmpl_sha, mode="run"):
     }
 
 
+
+def apply_m3(img, cands, best, mirror, rs, templates, cfg):
+    """§1.5c M3。mirror_m3 = digits23 のとき、M2（O_MIRROR_AMBIGUOUS）だけが理由で止まる非鏡像の best に限り、
+    印刷数字 2・3 の左右反転照合で曖昧さを解く。通ったら O_MIRROR_AMBIGUOUS を外す（他の理由・O_MIRRORED は残す）。
+    unimplemented のときは従来どおり判定を保留してログに残すだけ。戻りは (mirror, rs)。
+    """
+    mirror = dict(mirror or {})
+    if str(cfg.select.mirror_m3) == "unimplemented":
+        mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
+                        "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+        return mirror, rs
+    waivable = {"O_MIRROR_AMBIGUOUS"}
+    if int(cfg.select.m3_waives_score) == 1:
+        # 数字 2・3 が強く一致する（正しい向きで一意）なら、斜め・低解像度で罫線の ZNCC が低い／別仮説と近いだけの理由は解く。
+        # S4〜S7（ECC 相関・罫線 F・数字 A・V1〜V7）は変えない
+        waivable |= {"O_LOW_SCORE", "O_AMBIGUOUS"}
+    amb = [r for r in rs if r["code"] in waivable]
+    tmpl = next((t for t in templates if best is not None and t.id == best["template"]), None)
+    if not amb or any(r["code"] not in waivable and r["code"] != "O_MIRRORED" for r in rs) \
+            or best is None or best["mirror"] or tmpl is None or not tmpl.positive:
+        mirror["m3"] = {"status": "not_needed", "mode": "digits23"}
+        return mirror, rs
+    quad = hypothesis_quads(cands[best["cand"]]["quad"])[best["rot"] // 90][2]
+    norm, _ = orient.normalize(img, quad, cfg)
+    m3 = orient.mirror_m3(norm, tmpl, cfg)
+    mirror["m3"] = dict(m3, mode="digits23")
+    if m3["passed"]:
+        rs = [r for r in rs if r["code"] not in waivable]
+    return mirror, rs
+
 def _add(rec, stage, value):
     rec["stages"][stage] = clean(value)
 
@@ -271,11 +301,7 @@ def process_file(path, out_dir, cfg, templates, tmpl_sha, fill="black", shadow=F
         _add(rec, "S2", {"n_hypotheses": len(hyps), "top": [{k: h[k] for k in ("cand", "rot", "mirror", "template", "zncc")}
                                                             for h in top]})
         best, second, mirror, rs = _run("S3", s3_select, hyps, cands, cfg, templates)
-        # M3 は v2.1 の一部未実装（黙って無効化しない）。判定を保留していることをログに残す
-        mirror = dict(mirror or {})
-        if str(cfg.select.mirror_m3) == "unimplemented":
-            mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
-                            "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+        mirror, rs = apply_m3(img, cands, best, mirror, rs, templates, cfg)
         _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
         if rs:
             _fail("S3", rs)
@@ -582,10 +608,7 @@ def diagnose_file(path, out_dir, cfg, templates, tmpl_sha):
         best = None
         if r3:
             best, second, mirror, rs = r3
-            mirror = dict(mirror or {})
-            if str(cfg.select.mirror_m3) == "unimplemented":
-                mirror["m3"] = {"status": "unimplemented", "pending_code": "F_ANCHOR_MIRRORED",
-                                "note": "印刷数字の左右反転照合（§1.5c M3）は未実装。判定は M2 まで"}
+            mirror, rs = apply_m3(img, cands, best, mirror, rs, templates, cfg)
             _add(rec, "S3", {"best": best, "second": second, "mirror": mirror})
             if rs:
                 note("S3", rs)

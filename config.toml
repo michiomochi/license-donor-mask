@@ -60,7 +60,11 @@ tie_eps = 1e-6
 multi_card_iou = 0.10
 family_iou = 0.90              # §1.5b 配置ファミリー（field_rect 同士の IoU）。同族は互いに second にしない
 mirror_margin = 0.03           # §1.5c M2: best.zncc - twin.zncc >= これ。0 以下は ConfigError（無効化できない）
-mirror_m3 = "unimplemented"    # §1.5c M3（印刷数字の左右反転照合）は v2.1 の一部未実装。この値以外は ConfigError
+mirror_m3 = "unimplemented"    # §1.5c M3。"unimplemented"（既定。判定を保留し M2 だけ）か "digits23"（数字2・3の左右反転照合で M2 の曖昧さを解く）。他は ConfigError
+m3_min_score = 0.70             # digits23: 通常向きの数字パッチ照合値の下限（2・3 の両方）
+m3_margin = 0.15                # digits23: 通常 − 左右反転 の下限（2・3 の両方）
+m3_waives_score = 0            # 1: digits23 が通ったとき O_LOW_SCORE / O_AMBIGUOUS も解く（緩和。既定は 0。プロファイルでだけ 1）
+m3_search_px = 40               # digits23: 数字の中心の周りの探索半幅（正規化 1011×638 の px。位置合わせ前なので少し広く）
 
 [ecc]                          # S4
 iterations = 50
