@@ -16,6 +16,8 @@ uv sync
 uv run python -m donor_mask run --in ./inbox --out ./out --config config.tolerant.toml
 ```
 
+In a git worktree, run `sh tools/setup-worktree.sh` instead of `uv sync`. It builds the worktree's own `.venv` from `uv.lock`, offline from the uv cache first.
+
 ## 結果
 
 - `out/ok/*__masked.png`: 塗れた画像。**次の工程に渡すのはこれだけ**です。
